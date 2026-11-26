@@ -83,9 +83,10 @@ function M.init(opts)
 	installJitStub()
 	hookDefFile()
 	-- Always use the committed ModCache, as PoB desktop does. HeadlessWrapper skips it when CI is set.
+	-- opts.keepCI leaves CI alone (PoB's own spec runs set it, so mods are parsed instead of read from the cache).
 	local getenv = os.getenv
 	os.getenv = function(name)
-		if name == "CI" then
+		if name == "CI" and not opts.keepCI then
 			return nil
 		end
 		return getenv(name)
