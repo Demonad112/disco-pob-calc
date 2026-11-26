@@ -82,7 +82,7 @@ The porting log is in [`docs/PORTING.md`](docs/PORTING.md).
 
 ## Build
 
-Needs: gcc, Node 22, emsdk 4.0.10 (`./emsdk install 4.0.10 && ./emsdk activate 4.0.10 && source ./emsdk_env.sh`).
+Needs: gcc, Node 22, emsdk 4.0.10 (`source "$(scripts/install-emsdk.sh 4.0.10)"` clones emsdk at that tag into `~/emsdk` and installs it).
 
 ```sh
 git submodule update --init --depth 1      # full fork, ~400 MB (mostly tree art)

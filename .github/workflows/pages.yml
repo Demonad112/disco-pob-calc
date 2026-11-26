@@ -1,4 +1,4 @@
-name: Pages build and deploy  # no commas: setup-emsdk puts the workflow name in its cache key, which rejects them
+name: Pages build and deploy
 
 on:
   push:
@@ -33,10 +33,15 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: mymindstorm/setup-emsdk@v14
+      # emsdk pinned by tag (scripts/install-emsdk.sh): no `emsdk update`, which fetches an unpinned archive of
+      # emsdk HEAD from github.com and failed a run with a 504.
+      - uses: actions/cache@v4
         with:
-          version: ${{ env.EMSDK_VERSION }}
-          actions-cache-folder: emsdk-cache
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
+
+      - name: Install emsdk ${{ env.EMSDK_VERSION }}
+        run: scripts/install-emsdk.sh "$EMSDK_VERSION" "$HOME/emsdk"
 
       - run: npm ci
 
