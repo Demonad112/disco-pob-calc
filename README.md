@@ -99,7 +99,7 @@ node scripts/serve.mjs dist 8080           # http://127.0.0.1:8080/
 
 Native CLI, for debugging PoB itself: `build/native/pobcalc lua/cli.lua fixtures/oracle/ninja-default.code.txt [--groups]`.
 
-CI (`.github/workflows/pages.yml`) runs all of the above on every push and PR, uploads the reports, and deploys `dist/` to Pages on push.
+CI (`.github/workflows/pages.yml`) runs all of the above on every push and PR, uploads the reports, deploys `dist/` to Pages on push to `main`, then reruns the e2e test against the live URL.
 
 ## Bump PoB2
 
