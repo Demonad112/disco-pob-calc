@@ -1,4 +1,5 @@
 -- Spec for native/patches: compound assignment (01), 5.1 gsub replacement rule (02), LuaJIT integer format (03),
+-- _ENV as an ordinary name (04),
 -- plus the host modules. Run: build/native/pobcalc test/lua/compound_spec.lua  (exits non-zero on failure)
 local passed, failed = 0, 0
 local function check(name, cond)
@@ -59,6 +60,12 @@ check("%d truncates", string.format("%d", 3.9) == "3" and string.format("%d", -2
 check("%d nan", string.format("%d", 0 / 0) == "-9223372036854775808")
 check("%d inf", string.format("%d", 1 / 0) == "-9223372036854775808")
 check("%x negative", string.format("%x", -1) == "ffffffffffffffff")
+
+-- 04 _ENV is an ordinary name, as in LuaJIT
+check("local _ENV = nil keeps globals", (loadstring("local _ENV = nil; return table.concat({ 'a', 'b' })"))() == "ab")
+check("_ENV is a plain global (nil)", (loadstring("return _ENV"))() == nil)
+check("load(..., env) still sets globals", (load("return x", "t", "t", { x = 7 }))() == 7)
+check("undefined global named in errors", select(2, pcall(loadstring("undefined_fn_04()"))):find("global 'undefined_fn_04'") ~= nil)
 
 -- Lua 5.2 features PoB needs, and host modules
 check("goto", compiles("for i = 1, 2 do if i == 1 then goto continue end ::continue:: end"))
