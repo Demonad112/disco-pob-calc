@@ -2,7 +2,7 @@ name: Pages build and deploy
 
 on:
   push:
-    branches: [main, ccr-db638c9c-02d2av]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -86,19 +86,38 @@ jobs:
         with:
           path: dist
 
+  # Only main deploys: the github-pages environment rejects other branches before any step runs.
   deploy:
     needs: build
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # Pages only accepts branches the github-pages environment allows (default: main). Until the owner allows the
-    # work branch, a deploy from it fails without failing the run.
-    continue-on-error: ${{ github.ref != 'refs/heads/main' }}
     permissions:
       pages: write
       id-token: write
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # The same e2e test against the deployed URL: catches a site that deployed but doesn't load or calculate.
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: End to end against ${{ needs.deploy.outputs.page_url }}
+        env:
+          E2E_URL: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          npx playwright install --with-deps chromium
+          node --test test/e2e.test.mjs
