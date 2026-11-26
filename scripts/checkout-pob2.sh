@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Check out vendor/pob2 at the commit this repo pins, with only the calc files (sparse + blobless).
+# The full fork is ~400 MB, almost all tree art; this fetches ~40 MB. Used by CI; works locally too.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+URL="$(git config -f .gitmodules submodule.vendor/pob2.url)"
+SHA="$(git ls-tree HEAD vendor/pob2 | awk '{print $3}')"
+[ -n "$SHA" ] || { echo "vendor/pob2 is not a submodule at HEAD" >&2; exit 1; }
+if [ -e vendor/pob2/.git ] && [ "$(git -C vendor/pob2 rev-parse HEAD 2>/dev/null)" = "$SHA" ]; then
+  echo "vendor/pob2 already at $SHA"; exit 0
+fi
+rm -rf vendor/pob2
+git init -q vendor/pob2
+cd vendor/pob2
+git remote add origin "$URL"
+git sparse-checkout set --no-cone \
+  '/src/*.lua' '/src/Modules/' '/src/Classes/' '/src/Data/**/*.lua' \
+  '/src/TreeData/*/tree.lua' '/src/TreeData/legion/*.lua' '/runtime/lua/' '/manifest.xml' '/LICENSE.md'
+for i in 1 2 3 4; do
+  git fetch -q --depth 1 --filter=blob:none origin "$SHA" && break
+  echo "fetch failed, retrying in $((i * 5)) s" >&2; sleep $((i * 5))
+done
+git checkout -q FETCH_HEAD
+echo "vendor/pob2 at $(git rev-parse --short HEAD): $(grep -o 'Version number="[^"]*"' manifest.xml)"

@@ -1,0 +1,99 @@
+name: Build, test and deploy to Pages
+
+on:
+  push:
+    branches: [main, ccr-db638c9c-02d2av]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EMSDK_VERSION: 4.0.10
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Check out PoB2 (pinned, calc files only)
+        run: scripts/checkout-pob2.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
+
+      - run: npm ci
+
+      - name: Build native host and wasm engine
+        run: native/build.sh all
+
+      - name: Patch spec (compound assignment, 5.1 gsub, LuaJIT %d, host modules)
+        run: build/native/pobcalc test/lua/compound_spec.lua
+
+      - name: Parity, repo files (snapshot + every skill group)
+        run: node --test test/parity.test.mjs
+
+      - name: Pack (compile check of every bundled Lua file)
+        run: node scripts/pack.mjs | tee pack-report.txt
+
+      - name: Parity, shipped packs
+        run: PARITY_SOURCE=dist PARITY_GROUPS=0 node --test test/parity.test.mjs
+
+      - name: End to end in Chromium
+        run: |
+          npx playwright install --with-deps chromium
+          E2E_SCREENSHOT=e2e-screenshot.png node --test test/e2e.test.mjs
+
+      - name: Job summary
+        if: always()
+        run: node scripts/summary.mjs >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports
+          path: |
+            parity-diff.json
+            parity-timings.json
+            e2e-timings.json
+            e2e-screenshot.png
+            pack-report.txt
+            dist/manifest.json
+          if-no-files-found: ignore
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # Pages only accepts branches the github-pages environment allows (default: main). Until the owner allows the
+    # work branch, a deploy from it fails without failing the run.
+    continue-on-error: ${{ github.ref != 'refs/heads/main' }}
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
