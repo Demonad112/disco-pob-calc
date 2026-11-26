@@ -28,7 +28,29 @@ function M.init(opts)
 	})
 end
 
--- One decoded PoB2 export XML -> JSON { snapshot, groups|null, timings } or { error }.
+-- The main skill's name and its main-hand hit split by damage type (groups_lib's HAND keys). Not in
+-- services/pob-engine's shape (its snapshot has no split); added alongside it for the damage-split view.
+local HAND = { "PhysicalHitAverage", "LightningHitAverage", "ColdHitAverage", "FireHitAverage", "ChaosHitAverage",
+	"TotalMin", "TotalMax" }
+local function mainSkillInfo()
+	local env = build and build.calcsTab and build.calcsTab.mainEnv
+	local ms = env and env.player and env.player.mainSkill
+	local ge = ms and ms.activeEffect and ms.activeEffect.grantedEffect
+	local out = build.calcsTab.mainOutput or {}
+	local info = { skill = ge and ge.name or nil, mainSocketGroup = build.mainSocketGroup }
+	for _, hand in ipairs({ "MainHand", "OffHand" }) do
+		if type(out[hand]) == "table" then
+			local h = {}
+			for _, k in ipairs(HAND) do
+				if type(out[hand][k]) == "number" and out[hand][k] == out[hand][k] then h[k] = out[hand][k] end
+			end
+			info[hand == "MainHand" and "mainHand" or "offHand"] = pob.object(h)
+		end
+	end
+	return pob.object(info)
+end
+
+-- One decoded PoB2 export XML -> JSON { snapshot, mainSkill, groups|null, timings } or { error }.
 function M.calc(xml, wantGroups)
 	if type(xml) ~= "string" or not xml:find("<PathOfBuilding2", 1, true) then
 		return encode({ error = "not a PoB2 export XML" })
@@ -41,7 +63,7 @@ function M.calc(xml, wantGroups)
 		timings.restart = now() - t0
 		t0 = now()
 	end
-	local snap, groups
+	local snap, groups, mainSkill
 	local ok, err
 	if wantGroups then
 		local tGroups
@@ -49,6 +71,7 @@ function M.calc(xml, wantGroups)
 			timings.load = now() - t0
 			local ts = now()
 			snap = pob.snapshot(loadError)
+			if not loadError then mainSkill = mainSkillInfo() end
 			timings.snapshot = now() - ts
 			tGroups = now()
 		end)
@@ -63,6 +86,7 @@ function M.calc(xml, wantGroups)
 			timings.load = now() - t0
 			local ts = now()
 			snap = pob.snapshot(loadError)
+			if not loadError then mainSkill = mainSkillInfo() end
 			timings.snapshot = now() - ts
 		end)
 	end
@@ -74,6 +98,7 @@ function M.calc(xml, wantGroups)
 	end
 	return encode({
 		snapshot = snap,
+		mainSkill = mainSkill or require("dkjson").null,
 		groups = groups or require("dkjson").null,
 		timings = pob.object(timings),
 	})

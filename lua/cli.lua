@@ -4,6 +4,7 @@
 local here = (debug.getinfo(1, "S").source:sub(2)):match("^(.*)[/\\]") or "."
 local root = pobhost.getcwd()
 local file, flag = ...
+if not file and arg then file, flag = arg[1], arg[2] end
 assert(file, "usage: pobcalc lua/cli.lua <code-or-xml-file> [--groups]")
 local f = assert(io.open(file, "rb"))
 local text = f:read("*a")

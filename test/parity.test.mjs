@@ -2,29 +2,33 @@
 // LuaJIT in upgraded-disco-companion (fixtures/oracle, provenance in fixtures/README.md).
 //   node --test test/parity.test.mjs            snapshot + all skill groups
 //   PARITY_GROUPS=0 node --test test/...        snapshot only (fast)
+//   PARITY_SOURCE=dist node --test test/...     boot from dist/manifest.json + packs (what the site ships)
 // Writes parity-diff.json (every mismatch, empty array when green) and parity-timings.json next to the repo root.
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { decodePobCode } from '../web/decode.mjs'
 import { compareToOracle } from './compare.mjs'
-import { bootNodeEngine, pinCommit, ROOT } from './node-engine.mjs'
+import { bootDistEngine, bootNodeEngine, pinCommit, ROOT } from './node-engine.mjs'
 
 const read = (p) => readFileSync(ROOT + p, 'utf8')
 const oracle = JSON.parse(read('fixtures/oracle/ninja-default.oracle.json'))
 const groupsOracle = JSON.parse(read('fixtures/oracle/ninja-default.groups.oracle.json'))
 const withGroups = process.env.PARITY_GROUPS !== '0'
+const fromDist = process.env.PARITY_SOURCE === 'dist'
 const EXPECTED_TOTAL_DPS = 186706
 
-test('wasm engine reproduces PoB2 v0.23.1 for the reference code', { timeout: 600_000 }, async (t) => {
-  const timings = {}
+test(`wasm engine reproduces PoB2 v0.23.1 for the reference code (${fromDist ? 'dist packs' : 'repo files'})`, { timeout: 600_000 }, async (t) => {
+  const timings = { source: fromDist ? 'dist' : 'repo' }
   let t0 = performance.now()
-  const { engine, stderr } = await bootNodeEngine()
-  timings.wasmInstantiateMs = performance.now() - t0
+  const boot = fromDist ? await bootDistEngine() : await bootNodeEngine()
+  const { engine, stderr } = boot
+  timings.bootMs = performance.now() - t0
+  if (boot.timings) timings.unpackMs = boot.timings.unpackMs
   t0 = performance.now()
   let info
   try {
-    info = engine.init({ pinCommit: pinCommit() })
+    info = engine.init({ pinCommit: fromDist ? boot.manifest.pinCommit : pinCommit() })
   } catch (e) {
     console.error(stderr.slice(-30).join('\n'))
     throw e
