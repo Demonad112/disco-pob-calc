@@ -1,0 +1,4 @@
+[submodule "vendor/pob2"]
+	path = vendor/pob2
+	url = https://github.com/Demonad112/PathOfBuilding-PoE2
+	shallow = true

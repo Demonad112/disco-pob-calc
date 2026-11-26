@@ -1,0 +1,8 @@
+/build/
+/dist/
+/node_modules/
+/test-results/
+/playwright-report/
+parity-diff.json
+parity-timings.json
+e2e-timings.json
