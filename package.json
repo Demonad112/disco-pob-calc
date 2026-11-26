@@ -1,0 +1,24 @@
+{
+  "name": "disco-pob-calc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Path of Building 2's calc engine in the browser: PUC Lua 5.2 (patched) in WebAssembly, served from GitHub Pages.",
+  "scripts": {
+    "build:wasm": "native/build.sh wasm",
+    "build:native": "native/build.sh native",
+    "pack": "node scripts/pack.mjs",
+    "build": "native/build.sh all && node scripts/pack.mjs",
+    "test:spec": "build/native/pobcalc test/lua/compound_spec.lua",
+    "test:parity": "node --test test/parity.test.mjs",
+    "test:parity:dist": "PARITY_SOURCE=dist PARITY_GROUPS=0 node --test test/parity.test.mjs",
+    "test:e2e": "node --test test/e2e.test.mjs",
+    "serve": "node scripts/serve.mjs dist 8080"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

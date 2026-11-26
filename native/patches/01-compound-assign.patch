@@ -1,0 +1,125 @@
+diff -ru a/src/llex.c b/src/llex.c
+--- a/src/llex.c	2026-11-26 18:30:23.300191652 +0000
++++ b/src/llex.c	2026-11-26 18:30:23.324676926 +0000
+@@ -38,7 +38,8 @@
+     "end", "false", "for", "function", "goto", "if",
+     "in", "local", "nil", "not", "or", "repeat",
+     "return", "then", "true", "until", "while",
+-    "..", "...", "==", ">=", "<=", "~=", "::", "<eof>",
++    "..", "...", "==", ">=", "<=", "~=", "::",
++    "+=", "-=", "*=", "/=", "%=", "^=", "..=", "<eof>",
+     "<number>", "<name>", "<string>"
+ };
+ 
+@@ -412,6 +413,7 @@
+       }
+       case '-': {  /* '-' or '--' (comment) */
+         next(ls);
++        if (ls->current == '=') { next(ls); return TK_SUBEQ; }
+         if (ls->current != '-') return '-';
+         /* else is a comment */
+         next(ls);
+@@ -438,6 +440,19 @@
+         else if (sep == -1) return '[';
+         else lexerror(ls, "invalid long string delimiter", TK_STRING);
+       }
++      case '+': case '*': case '/': case '%': case '^': {
++        int c = ls->current;
++        next(ls);
++        if (ls->current != '=') return c;
++        next(ls);
++        switch (c) {
++          case '+': return TK_ADDEQ;
++          case '*': return TK_MULEQ;
++          case '/': return TK_DIVEQ;
++          case '%': return TK_MODEQ;
++          default: return TK_POWEQ;
++        }
++      }
+       case '=': {
+         next(ls);
+         if (ls->current != '=') return '=';
+@@ -472,6 +487,7 @@
+         if (check_next(ls, ".")) {
+           if (check_next(ls, "."))
+             return TK_DOTS;   /* '...' */
++          else if (check_next(ls, "=")) return TK_CONCATEQ;   /* '..=' */
+           else return TK_CONCAT;   /* '..' */
+         }
+         else if (!lisdigit(ls->current)) return '.';
+diff -ru a/src/llex.h b/src/llex.h
+--- a/src/llex.h	2026-11-26 18:30:23.300304710 +0000
++++ b/src/llex.h	2026-11-26 18:30:23.323028608 +0000
+@@ -26,7 +26,10 @@
+   TK_GOTO, TK_IF, TK_IN, TK_LOCAL, TK_NIL, TK_NOT, TK_OR, TK_REPEAT,
+   TK_RETURN, TK_THEN, TK_TRUE, TK_UNTIL, TK_WHILE,
+   /* other terminal symbols */
+-  TK_CONCAT, TK_DOTS, TK_EQ, TK_GE, TK_LE, TK_NE, TK_DBCOLON, TK_EOS,
++  TK_CONCAT, TK_DOTS, TK_EQ, TK_GE, TK_LE, TK_NE, TK_DBCOLON,
++  /* compound assignment (disco-pob-calc patch, matches PoB's LuaJIT) */
++  TK_ADDEQ, TK_SUBEQ, TK_MULEQ, TK_DIVEQ, TK_MODEQ, TK_POWEQ, TK_CONCATEQ,
++  TK_EOS,
+   TK_NUMBER, TK_NAME, TK_STRING
+ };
+ 
+diff -ru a/src/lparser.c b/src/lparser.c
+--- a/src/lparser.c	2026-11-26 18:30:23.300315400 +0000
++++ b/src/lparser.c	2026-11-26 18:30:23.325846013 +0000
+@@ -1477,12 +1477,56 @@
+ }
+ 
+ 
++/*
++** disco-pob-calc patch: compound assignment `v op= exp` (op one of + - * / % ^ ..),
++** the syntax PoB's LuaJIT accepts. Single target only. The target's table and key
++** are evaluated once: for an indexed target their registers are kept and the
++** current value is read into a fresh register above them.
++*/
++static BinOpr compoundopr (int tok) {
++  switch (tok) {
++    case TK_ADDEQ: return OPR_ADD;
++    case TK_SUBEQ: return OPR_SUB;
++    case TK_MULEQ: return OPR_MUL;
++    case TK_DIVEQ: return OPR_DIV;
++    case TK_MODEQ: return OPR_MOD;
++    case TK_POWEQ: return OPR_POW;
++    case TK_CONCATEQ: return OPR_CONCAT;
++    default: return OPR_NOBINOPR;
++  }
++}
++
++
++static void compoundassign (LexState *ls, expdesc *v, BinOpr op) {
++  FuncState *fs = ls->fs;
++  expdesc cur, rhs;
++  int line = ls->linenumber;
++  check_condition(ls, vkisvar(v->k), "syntax error");
++  luaX_next(ls);  /* skip operator */
++  if (v->k == VINDEXED) {
++    int reg = fs->freereg;
++    OpCode o = (v->u.ind.vt == VLOCAL) ? OP_GETTABLE : OP_GETTABUP;
++    luaK_reserveregs(fs, 1);
++    luaK_codeABC(fs, o, reg, v->u.ind.t, v->u.ind.idx);
++    init_exp(&cur, VNONRELOC, reg);
++  }
++  else
++    cur = *v;  /* local or upvalue: reading it frees nothing */
++  luaK_infix(fs, op, &cur);
++  expr(ls, &rhs);
++  luaK_posfix(fs, op, &cur, &rhs, line);
++  luaK_storevar(fs, v, &cur);
++}
++
++
+ static void exprstat (LexState *ls) {
+   /* stat -> func | assignment */
+   FuncState *fs = ls->fs;
+   struct LHS_assign v;
+   suffixedexp(ls, &v.v);
+-  if (ls->t.token == '=' || ls->t.token == ',') { /* stat -> assignment ? */
++  if (compoundopr(ls->t.token) != OPR_NOBINOPR)  /* stat -> compound assignment */
++    compoundassign(ls, &v.v, compoundopr(ls->t.token));
++  else if (ls->t.token == '=' || ls->t.token == ',') { /* stat -> assignment ? */
+     v.prev = NULL;
+     assignment(ls, &v, 1);
+   }

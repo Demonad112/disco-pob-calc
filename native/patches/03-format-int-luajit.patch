@@ -1,0 +1,45 @@
+diff -ru a/src/lstrlib.c b/src/lstrlib.c
+--- a/src/lstrlib.c	2026-11-26 18:45:24.245756792 +0000
++++ b/src/lstrlib.c	2026-11-26 18:45:24.262127052 +0000
+@@ -889,6 +889,18 @@
+ }
+ 
+ 
++/*
++** disco-pob-calc patch: LuaJIT (x86-64) semantics for %d/%i/%o/%u/%x/%X. The number is truncated
++** toward zero as cvttsd2si does: NaN, +-inf and anything outside int64 become INT64_MIN. Lua 5.2
++** raises "not a number in proper range" instead, and a plain C cast is undefined (it traps in wasm).
++*/
++static LUA_INTFRM_T pob_num2intfrm (lua_Number n) {
++  if (n != n || n >= 9223372036854775808.0 || n < -9223372036854775808.0)
++    return (LUA_INTFRM_T)(-9223372036854775807LL - 1);
++  return (LUA_INTFRM_T)n;
++}
++
++
+ static int str_format (lua_State *L) {
+   int top = lua_gettop(L);
+   int arg = 1;
+@@ -916,20 +928,14 @@
+         }
+         case 'd': case 'i': {
+           lua_Number n = luaL_checknumber(L, arg);
+-          LUA_INTFRM_T ni = (LUA_INTFRM_T)n;
+-          lua_Number diff = n - (lua_Number)ni;
+-          luaL_argcheck(L, -1 < diff && diff < 1, arg,
+-                        "not a number in proper range");
++          LUA_INTFRM_T ni = pob_num2intfrm(n);
+           addlenmod(form, LUA_INTFRMLEN);
+           nb = sprintf(buff, form, ni);
+           break;
+         }
+         case 'o': case 'u': case 'x': case 'X': {
+           lua_Number n = luaL_checknumber(L, arg);
+-          unsigned LUA_INTFRM_T ni = (unsigned LUA_INTFRM_T)n;
+-          lua_Number diff = n - (lua_Number)ni;
+-          luaL_argcheck(L, -1 < diff && diff < 1, arg,
+-                        "not a non-negative number in proper range");
++          unsigned LUA_INTFRM_T ni = (unsigned LUA_INTFRM_T)pob_num2intfrm(n);
+           addlenmod(form, LUA_INTFRMLEN);
+           nb = sprintf(buff, form, ni);
+           break;

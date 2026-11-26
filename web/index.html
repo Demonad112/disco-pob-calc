@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PoB2 Calc</title>
+<meta name="description" content="Path of Building 2's own calc engine, running fully in your browser (WebAssembly).">
+<link rel="stylesheet" href="demo.css">
+<link rel="modulepreload" href="pob-calc.js">
+</head>
+<body>
+<main>
+  <header>
+    <h1>PoB2 Calc</h1>
+    <p class="lede">Path of Building 2's own Lua calc engine, compiled to WebAssembly and running entirely in this tab. Nothing is sent to a server.</p>
+    <p class="meta" id="meta">Loading engine…</p>
+  </header>
+
+  <section class="panel" aria-labelledby="input-h">
+    <h2 id="input-h">Build</h2>
+    <label for="code" class="sr-only">PoB2 code or XML</label>
+    <textarea id="code" rows="5" spellcheck="false" placeholder="Paste a Path of Building 2 code (or its XML)"></textarea>
+    <div class="row">
+      <button id="calc" type="button" disabled>Calculate</button>
+      <button id="sample" type="button" class="secondary">Load sample code</button>
+      <label class="check"><input type="checkbox" id="groups"> Recalculate every skill group (slow)</label>
+    </div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+    <div class="bar" aria-hidden="true"><div id="bar-fill"></div></div>
+  </section>
+
+  <section class="panel" aria-labelledby="timing-h">
+    <h2 id="timing-h">Timings</h2>
+    <table class="kv" id="timings"><tbody></tbody></table>
+  </section>
+
+  <section id="results" hidden>
+    <div class="headline">
+      <div><span class="label">Total DPS</span><span class="big" id="total-dps">–</span></div>
+      <div><span class="label">Main skill</span><span class="mid" id="main-skill">–</span></div>
+      <div><span class="label">Effective HP</span><span class="mid" id="ehp">–</span></div>
+    </div>
+    <div class="grid">
+      <section class="panel"><h2>Offence</h2><table class="kv" id="offence"><tbody></tbody></table></section>
+      <section class="panel"><h2>Damage split <small>(main hand, average hit)</small></h2><div id="split"></div></section>
+      <section class="panel"><h2>Pools &amp; defences</h2><table class="kv" id="defence"><tbody></tbody></table></section>
+      <section class="panel"><h2>Resistances</h2><table class="kv" id="resists"><tbody></tbody></table></section>
+      <section class="panel"><h2>Maximum hit taken</h2><table class="kv" id="maxhit"><tbody></tbody></table></section>
+      <section class="panel"><h2>Avoidance</h2><table class="kv" id="avoid"><tbody></tbody></table></section>
+    </div>
+    <section class="panel"><h2>DPS per skill</h2><div id="skills"></div></section>
+    <section class="panel">
+      <details>
+        <summary>Raw JSON <button id="copy" type="button" class="secondary small">Copy</button></summary>
+        <pre id="json"></pre>
+      </details>
+    </section>
+  </section>
+
+  <footer>
+    <p>Engine: PUC Lua 5.2.4 (patched to read PoB's LuaJIT syntax) in WebAssembly, running PoB2 unmodified from
+    <a href="https://github.com/Demonad112/PathOfBuilding-PoE2">Demonad112/PathOfBuilding-PoE2</a>.
+    Source: <a href="https://github.com/Demonad112/disco-pob-calc">disco-pob-calc</a>. Not affiliated with Grinding Gear Games or the Path of Building team.</p>
+  </footer>
+</main>
+<script type="module" src="demo.js"></script>
+</body>
+</html>

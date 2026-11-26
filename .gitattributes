@@ -1,0 +1,2 @@
+third_party/** linguist-vendored -text
+fixtures/oracle/** -text linguist-generated
