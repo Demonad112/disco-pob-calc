@@ -1,4 +1,4 @@
-name: Build, test and deploy to Pages
+name: Pages build and deploy  # no commas: setup-emsdk puts the workflow name in its cache key, which rejects them
 
 on:
   push:
