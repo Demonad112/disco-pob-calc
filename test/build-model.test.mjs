@@ -1,6 +1,6 @@
 // Build model (P0) against the reference fixture. Pure JS: no engine needed.
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { decodePobBuild, decodePobCode } from '../web/decode.mjs'
 import { parseItem } from '../web/build-model.mjs'
@@ -71,7 +71,7 @@ const mod = (slot, text) => model.items.slots[slot].item.mods.find((m) => m.text
 
 test('affix data records the PoB2 pin it was built from', () => {
   assert.equal(model.affixData.pob2Version, '0.23.1')
-  assert.equal(model.affixData.schema, 1)
+  assert.equal(model.affixData.schema, 2)
 })
 
 test('exact match: tier, prefix/suffix, range, roll position, best tier at item level', () => {
@@ -105,14 +105,51 @@ test('hybrid lines share one mod and carry per-line ranges', () => {
   assert.equal(a.tier, b.tier)
 })
 
-test('unmatched and off-base lines are reported, never guessed', () => {
+test('a sum of several same-template mods across distinct groups is reported combined, not guessed (F5)', () => {
+  // This body armour's "139%" line is a genuine sum: several LocalEvasionAndEnergyShield-family mods (3 distinct
+  // groups spawnable on a body armour) can add up to 139, and nothing in the export says which - so it's honestly
+  // 'combined-ambiguous', not resolved to one tier and not dropped as 'unmatched'.
   const u = mod('Body Armour', '139% increased Evasion and Energy Shield').lookup
-  assert.equal(u.status, 'unmatched')
+  assert.equal(u.status, 'combined-ambiguous')
   assert.equal(u.tier, null)
-  assert.match(u.notes[0], /outside every tier range/)
+  assert.ok(u.combinations.length > 1)
+  for (const combo of u.combinations) {
+    assert.equal(new Set(combo.map((p) => p.affix)).size, 1) // every part of a combo is the same affix side
+    const lo = combo.reduce((s, p) => s + p.ranges[0].min, 0)
+    const hi = combo.reduce((s, p) => s + p.ranges[0].max, 0)
+    assert.ok(139 >= lo && 139 <= hi)
+  }
+  // The gloves line "Attacks Gain 18% of Damage as Extra Cold Damage" matches ModItem.lua's HandWraps* family
+  // exactly (weight 0 on every base: vendor/pob2 src/Data/ModItem.lua's HandWrapsAddedColdDamage1..8 all carry
+  // weightVal {0}), so it's off-base with that family recorded as its source (F4).
   const o = mod('Gloves', 'Attacks Gain 18% of Damage as Extra Cold Damage')
   assert.equal(o.lookup.status, 'off-base')
+  assert.equal(o.lookup.source, 'hand-wraps/abyss')
+  assert.match(o.lookup.candidates[0].modId, /^HandWraps/)
   assert.equal(o.tier, null)
+})
+
+test('off-base fallback never proposes unique-only or corruption mods on a plain rare item', () => {
+  // Every RARE item mod lookup's source is one that can legitimately appear on a non-unique, non-corrupted item.
+  for (const it of Object.values(model.items.byId)) {
+    if (it.rarity !== 'RARE') continue
+    for (const m of it.mods) {
+      if (!m.lookup) continue
+      assert.notEqual(m.lookup.source, 'unique-only')
+      if (!it.corrupted) assert.notEqual(m.lookup.source, 'corruption')
+    }
+  }
+})
+
+test('the amulet\'s +85 maximum Energy Shield is above the item\'s recorded level (F4 anomaly)', () => {
+  // Amulet (item 16) is Item Level: 79, but the only tier whose range contains 85 (IncreasedEnergyShield10,
+  // vendor/pob2 src/Data/ModItem.lua) requires level 80. No essence/desecrated source explains it either, so PoB's
+  // data is trusted over the (possibly stale) exported ilvl: the tier is kept, flagged 'exact-above-ilvl'.
+  const es = mod('Amulet', '+85 to maximum Energy Shield').lookup
+  assert.equal(es.status, 'exact-above-ilvl')
+  assert.equal(es.tier, 1)
+  assert.equal(es.modId, 'IncreasedEnergyShield10')
+  assert.match(es.notes.at(-1), /requires ilvl 80 > item level 79/)
 })
 
 test('magic item names resolve their base', () => {
@@ -165,4 +202,17 @@ test('text-provided tier and affix are kept', async () => {
   assert.equal(l.tier, 9)
   assert.equal(l.affix, 'suffix')
   assert.equal(l.lookup.status === 'exact' || l.lookup.status === 'ambiguous', true)
+})
+
+// fixtures/Yykiuy.txt doesn't exist in this repo yet; guard so the suite still runs once it's added (every
+// Group A item asks for a block like this one against it).
+const yykiuyPath = new URL('../fixtures/Yykiuy.txt', import.meta.url)
+test('decodes and annotates the Yykiuy fixture without throwing', { skip: !existsSync(yykiuyPath) }, async () => {
+  const yCode = readFileSync(yykiuyPath, 'utf8')
+  const { model: yModel } = await decodePobBuild(yCode)
+  assert.ok(yModel.character.class)
+  for (const it of Object.values(yModel.items.byId)) {
+    for (const m of it.mods) if (m.lookup) assert.ok(m.lookup.status)
+  }
+  assert.ok(Array.isArray(yModel.warnings))
 })

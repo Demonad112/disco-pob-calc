@@ -102,6 +102,15 @@ function calc(x) {
   return res.snapshot
 }
 
+// fixtures/Yykiuy.txt doesn't exist in this repo yet; guard so the suite still runs once it's added.
+const yykiuyPath = new URL('../fixtures/Yykiuy.txt', import.meta.url)
+test('unedited round-trip is lossless on the Yykiuy fixture', { skip: !existsSync(yykiuyPath) }, async () => {
+  const yCode = readFileSync(yykiuyPath, 'utf8')
+  const yXml = await decodePobCode(yCode)
+  assert.equal(editBuild(yXml, []), yXml)
+  assert.equal(await decodePobCode(await encodePobCode(yXml)), yXml)
+})
+
 test('engine: edits change calc output as expected', { skip: !engineReady && 'native engine not built', timeout: 300_000 }, async () => {
   const base = calc(xml)
   assert.equal(Math.round(base.stats.TotalDPS), 186706)

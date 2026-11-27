@@ -11,9 +11,15 @@
 //  3. Keep the ones whose slot ranges contain the rolled values and whose level is at most the item level.
 //  4. Tier = rank of the mod's level inside its group among the mods that can spawn on this base (T1 = best).
 //  5. One candidate is "exact"; several are "ambiguous" and reported as such (tier null, tierLabel "T2 or T3").
-//     Other statuses: 'off-base' (text matches a mod this base cannot roll), 'unmatched', 'no-base', 'not-covered'.
-// Multi-line (hybrid) mods are matched as a unit across consecutive lines, and preferred over separate single-line
-// mods; when the lines could also be two separate mods the lookup carries the note 'hybrid-or-separate'.
+//     Other statuses: 'off-base' (text matches a mod this base cannot roll), 'unmatched', 'no-base',
+//     'combined'/'combined-ambiguous' (a line that sums several mods), 'exact-above-ilvl' (tier matches but its
+//     level exceeds the item's recorded level: PoB data is trusted, so the export's ilvl may just be stale).
+// Multi-line (hybrid) mods are matched as a unit across the item's lines, not only consecutive ones (real items
+// order lines by statOrder, so a hybrid's partner line is often elsewhere); preferred over separate single-line
+// mods, and when the lines could also be two separate mods the lookup carries the note 'hybrid-or-separate'.
+// Lines this base cannot roll (off-base), plus {crafted}/{desecrated} lines, resolve through `lookup.source`:
+// 'affix' (a normal spawnable mod) | 'essence' | 'desecrated' | 'corruption' | 'unique-only' | 'hand-wraps/abyss'
+// | 'unknown'.
 
 const EPS = 1e-6
 const NUM = /\((-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)\)|\d+(?:\.\d+)?/g
@@ -50,7 +56,15 @@ export function indexAffixes(table) {
       byTemplate.get(line.p).push({ mod, li })
     })
   }
-  return { table, byTemplate, spawnCache: new Map() }
+  // itemType -> Set of ModItem ids an essence can hit on that type (web/data/affixes.json's `essences` table: F3).
+  const essenceModsByType = new Map()
+  for (const ess of Object.values(table.essences ?? {})) {
+    for (const [type, modId] of Object.entries(ess.mods ?? {})) {
+      if (!essenceModsByType.has(type)) essenceModsByType.set(type, new Set())
+      essenceModsByType.get(type).add(modId)
+    }
+  }
+  return { table, byTemplate, spawnCache: new Map(), essenceModsByType }
 }
 
 function spawnWeight(table, mod, tags) {
@@ -68,7 +82,7 @@ function resolveBase(idx, name) {
 }
 
 // group -> mods that can spawn on this base, best first. Cached per base.
-function groupsFor(idx, itemName) {
+export function groupsFor(idx, itemName) {
   const baseName = resolveBase(idx, itemName)
   if (idx.spawnCache.has(baseName)) return idx.spawnCache.get(baseName)
   const { table } = idx
@@ -89,7 +103,7 @@ function groupsFor(idx, itemName) {
       list.sort((a, b) => b.lv - a.lv || key(b) - key(a) || (a.id < b.id ? -1 : 1))
       list.forEach((m, i) => tier.set(m, i + 1))
     }
-    out = { src, groups, tier, tags, baseName }
+    out = { src, groups, tier, tags, baseName, type: base[0], buff: base[2] ?? 0 }
   }
   idx.spawnCache.set(baseName, out)
   return out
@@ -155,6 +169,59 @@ function describeOffBase(mod, li, vals, range) {
   }
 }
 
+// Fallback classification for a line that does not match a normal spawnable affix of this base (F3/F4).
+// Order: essence (for the base's item type) -> desecrated (ModVeiled) -> corruption implicits -> unique-only ->
+// weight-0 ModItem entries (the "HandWraps…" abyss-jewel/glove family; anything else weight-0 is 'unknown').
+function classifySource(ctx, mod) {
+  if (mod.s === ctx.spawn.src && ctx.spawn.groups.get(mod.g)?.includes(mod)) return 'affix'
+  if (ctx.essenceIds?.has(mod.id)) return 'essence'
+  if (mod.s === 'desecrated') return 'desecrated'
+  if (mod.s === 'corruption') return 'corruption'
+  if (mod.s === 'unique') return 'unique-only'
+  if (/^HandWraps/.test(mod.id)) return 'hand-wraps/abyss'
+  return 'unknown'
+}
+
+function describeAny(ctx, mod, li, vals, range, source) {
+  const d = source === 'affix' ? describe(ctx, mod, li, vals, range) : describeOffBase(mod, li, vals, range)
+  d.source = source
+  return d
+}
+
+// Every mod (any source table) with exactly one display line matching this template and whose range contains vals.
+function singleCandidates(idx, line) {
+  return (idx.byTemplate.get(line.t) ?? []).filter((e) => e.mod.l.length === 1 && lineFits(e.mod.l[0].r, line.vals)).map((e) => e.mod)
+}
+
+const ORDER_BY_KIND = {
+  crafted: ['essence', 'affix'],
+  desecrated: ['desecrated', 'affix'],
+  explicit: ['affix', 'essence', 'desecrated', 'corruption', 'unique-only', 'hand-wraps/abyss'],
+  fractured: ['affix', 'essence', 'desecrated', 'corruption', 'unique-only', 'hand-wraps/abyss'],
+}
+
+/** Resolve one line (any kind) against every source table, in the fallback order F2/F3/F4 call for. */
+function resolveLine(ctx, idx, line, item) {
+  const pool = singleCandidates(idx, line)
+  const bySource = new Map()
+  for (const mod of pool) {
+    let s = classifySource(ctx, mod)
+    // Unique-only and corruption mods can't appear as plain explicit lines on an item that isn't actually a
+    // corrupted / UNIQUE-rarity item - without this, their huge pools make them look like a match for almost
+    // any stray number.
+    if (s === 'unique-only' && item.rarity !== 'UNIQUE') s = 'unknown'
+    if (s === 'corruption' && !item.corrupted) s = 'unknown'
+    if (!bySource.has(s)) bySource.set(s, [])
+    bySource.get(s).push(mod)
+  }
+  const order = ORDER_BY_KIND[line.mod.kind] ?? ORDER_BY_KIND.explicit
+  for (const s of order) {
+    const list = bySource.get(s)
+    if (list?.length) return { source: s, mods: list }
+  }
+  return { source: null, mods: [] }
+}
+
 function finish(ctx, status, candidates, notes) {
   const out = { status, tier: null, tierLabel: null, affix: null, candidates, notes }
   if (!candidates.length) return out
@@ -168,27 +235,109 @@ function finish(ctx, status, candidates, notes) {
   return out
 }
 
-// All mods (grouped by identity) whose lines k..k+n-1 match the item mods at positions i..i+n-1.
-function matchAt(ctx, i, lines, n) {
+// Every (mod, li) pair that could contribute to a sum (F5 "sum decomposition"): spawnable on this base, with a
+// display line matching the template, whether that's the mod's only line or one line of a hybrid.
+export function sumParts(ctx, template) {
+  const out = []
+  for (const { mod, li } of ctx.idx.byTemplate.get(template) ?? []) {
+    if (mod.s !== ctx.spawn.src || !ctx.spawn.groups.get(mod.g)?.includes(mod)) continue
+    out.push({ mod, li, range: mod.l[li].r[0] })
+  }
+  return out
+}
+
+// Combinations of 2 or 3 parts from DISTINCT affix groups whose summed ranges contain `value`.
+export function sumCombinations(parts, value) {
+  const out = []
+  const n = parts.length
+  const pick = (start, chosen) => {
+    if (chosen.length >= 2) {
+      const lo = chosen.reduce((s, p) => s + p.range[0], 0)
+      const hi = chosen.reduce((s, p) => s + p.range[1], 0)
+      if (value >= lo - EPS && value <= hi + EPS) out.push(chosen.slice())
+    }
+    if (chosen.length === 3) return
+    for (let i = start; i < n; i++) {
+      if (chosen.some((p) => p.mod.g === parts[i].mod.g)) continue
+      chosen.push(parts[i])
+      pick(i + 1, chosen)
+      chosen.pop()
+    }
+  }
+  pick(0, [])
+  return out
+}
+
+function describePart(ctx, part) {
+  const tier = ctx.spawn.tier.get(part.mod) ?? null
+  return { modId: part.mod.id, tier, affix: part.mod.t === 'P' ? 'prefix' : 'suffix', ranges: slotsOut(part.mod.l[part.li]) }
+}
+
+// Non-adjacent hybrid search (F5): a multi-line mod's lines don't have to sit next to each other on the item, so
+// search for each remaining line of a candidate mod anywhere among the still-unclaimed lines.
+function findHybridAt(ctx, lines, claimed, i) {
   const first = lines[i]
+  if (!first) return []
   const found = []
   for (const { mod, li } of ctx.idx.byTemplate.get(first.t) ?? []) {
-    if (li !== 0 || mod.l.length !== n || mod.s !== ctx.spawn.src) continue
+    if (li !== 0 || mod.l.length < 2 || mod.s !== ctx.spawn.src) continue
     if (!ctx.spawn.groups.get(mod.g)?.includes(mod)) continue
+    if (!lineFits(mod.l[0].r, first.vals)) continue
+    const used = new Set([i])
+    const indices = [i]
     let ok = true
-    for (let k = 0; k < n && ok; k++) {
-      const l = lines[i + k]
-      ok = !!l && l.t === mod.l[k].p && lineFits(mod.l[k].r, l.vals)
+    for (let k = 1; k < mod.l.length && ok; k++) {
+      const want = mod.l[k]
+      let hit = -1
+      for (let j = 0; j < lines.length; j++) {
+        if (used.has(j) || claimed.has(j) || !lines[j]) continue
+        if (lines[j].t === want.p && lineFits(want.r, lines[j].vals)) {
+          hit = j
+          break
+        }
+      }
+      if (hit < 0) {
+        ok = false
+        break
+      }
+      used.add(hit)
+      indices.push(hit)
     }
-    if (ok) found.push(mod)
+    if (ok) found.push({ mod, indices })
   }
   return found
 }
 
-function annotateItem(item, idx) {
+// PoB's affix budget: 3 prefixes + 3 suffixes on a rare (1 + 1 on magic), adjusted by any "+N Prefix/Suffix
+// Modifier allowed" implicit present on the item (crafted bases, omens, etc).
+const MODIFIER_ALLOWED = /^([+-]\d+)\s+(Prefix|Suffix)\s+Modifier allowed$/i
+function affixBudget(item) {
+  const budget = { prefix: item.rarity === 'MAGIC' ? 1 : 3, suffix: item.rarity === 'MAGIC' ? 1 : 3 }
+  for (const m of item.mods) {
+    if (!m.implicit) continue
+    const mm = MODIFIER_ALLOWED.exec(m.text)
+    if (mm) budget[mm[2].toLowerCase()] += Number(mm[1])
+  }
+  return budget
+}
+
+function setLookup(l, lookup) {
+  l.mod.lookup = lookup
+  if (lookup.status === 'exact' || lookup.status === 'exact-above-ilvl') {
+    if (l.mod.tier === null) l.mod.tier = lookup.tier
+    if (l.mod.rollMin === null && lookup.ranges?.length === 1) {
+      l.mod.rollMin = lookup.ranges[0].min
+      l.mod.rollMax = lookup.ranges[0].max
+    }
+  }
+  if (l.mod.affix === null && lookup.affix) l.mod.affix = lookup.affix
+}
+
+function annotateItem(item, idx, warnings) {
   if (item.rarity !== 'RARE' && item.rarity !== 'MAGIC') return
   const spawn = item.base ? groupsFor(idx, item.base) : null
-  const ctx = { idx, spawn, itemLevel: item.itemLevel ?? null }
+  const essenceIds = spawn ? idx.essenceModsByType.get(spawn.type) ?? new Set() : new Set()
+  const ctx = { idx, spawn, itemLevel: item.itemLevel ?? null, essenceIds }
   const mods = item.mods
   // Affix lines only: implicit, enchant and rune lines are skipped.
   const lines = mods.map((m) => {
@@ -196,89 +345,142 @@ function annotateItem(item, idx) {
     const { template, vals } = itemValues(m.text)
     return { t: template, vals, mod: m }
   })
-  for (let i = 0; i < mods.length; ) {
-    const line = lines[i]
-    if (!line) {
-      i++
-      continue
-    }
-    const m = line.mod
-    if (m.kind === 'crafted' || m.kind === 'desecrated') {
-      m.lookup = { status: 'not-covered', tier: null, tierLabel: null, affix: null, candidates: [], notes: [`${m.kind} mods are not in the item mod tables`] }
-      i++
-      continue
-    }
-    if (!spawn) {
-      m.lookup = { status: 'no-base', tier: null, tierLabel: null, affix: null, candidates: [], notes: [`base "${item.base}" not in the base table`] }
-      i++
-      continue
-    }
-    // hybrid: longest run of consecutive affix lines that one multi-line mod explains
-    let span = 1
-    let hits = []
-    for (let n = Math.min(4, lines.length - i); n >= 2; n--) {
-      if (lines.slice(i, i + n).some((l) => !l || l.mod.kind === 'crafted' || l.mod.kind === 'desecrated')) continue
-      hits = matchAt(ctx, i, lines, n)
-      if (hits.length) {
-        span = n
-        break
-      }
-    }
+  if (!spawn) {
+    for (const l of lines) if (l) l.mod.lookup = { status: 'no-base', tier: null, tierLabel: null, affix: null, candidates: [], notes: [`base "${item.base}" not in the base table`] }
+    return
+  }
+  const claimed = new Set()
+  // Pass 1: hybrids, anywhere on the item (F5), longest line-count first so a 3-line mod wins over a 2-line one
+  // that happens to share a line's template.
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i] || claimed.has(i)) continue
+    const hits = findHybridAt(ctx, lines, claimed, i).sort((a, b) => b.mod.l.length - a.mod.l.length)
+    if (!hits.length) continue
+    const span = hits[0].mod.l.length
+    let group = hits.filter((h) => h.mod.l.length === span)
     const notes = []
-    const singles = (l) => (idx.byTemplate.get(l.t) ?? []).filter((e) => e.mod.l.length === 1 && e.mod.s === spawn.src)
-    const spawnable = (mod) => spawn.groups.get(mod.g)?.includes(mod)
-    if (!hits.length) hits = singles(line).filter((e) => spawnable(e.mod) && lineFits(e.mod.l[0].r, line.vals)).map((e) => e.mod)
-    else if (lines.slice(i, i + span).every((l) => singles(l).some((e) => spawnable(e.mod) && lineFits(e.mod.l[0].r, l.vals)))) notes.push('hybrid-or-separate')
-    if (hits.length > 1 && item.rarity === 'MAGIC' && item.name) {
-      const named = hits.filter((h) => h.n && item.name.includes(h.n))
-      if (named.length && named.length < hits.length) {
+    if (group.length > 1 && item.rarity === 'MAGIC' && item.name) {
+      const named = group.filter((h) => h.mod.n && item.name.includes(h.mod.n))
+      if (named.length && named.length < group.length) {
         notes.push('narrowed by the affix name in the item name')
-        hits = named
+        group = named
       }
     }
-    if (hits.length && ctx.itemLevel !== null) {
-      const ok = hits.filter((h) => h.lv <= ctx.itemLevel)
-      if (ok.length && ok.length < hits.length) notes.push(`excluded ${hits.length - ok.length} tier(s) above item level ${ctx.itemLevel}`)
-      if (ok.length) hits = ok
-      else notes.push('only tiers above item level match')
+    if (ctx.itemLevel !== null) {
+      const ok = group.filter((h) => h.mod.lv <= ctx.itemLevel)
+      if (ok.length && ok.length < group.length) notes.push(`excluded ${group.length - ok.length} tier(s) above item level ${ctx.itemLevel}`)
+      if (ok.length) group = ok
     }
-    let offBase = []
-    if (!hits.length && span === 1) {
-      offBase = singles(line).filter((e) => !spawnable(e.mod) && lineFits(e.mod.l[0].r, line.vals)).map((e) => e.mod)
-      if (offBase.length) notes.push('matches a mod this base cannot roll naturally (essence or special craft, or newer data than this table), so no tier')
-      else notes.push(singles(line).length ? 'value is outside every tier range (the line may add up several mods)' : 'no mod with this text in the item tables (desecrated, special base or non-craftable)')
-    }
-    for (let k = 0; k < span; k++) {
-      const l = lines[i + k]
-      const cands = offBase.length ? offBase.map((h) => describeOffBase(h, 0, l.vals, l.mod.range)) : hits.map((h) => describe(ctx, h, k, l.vals, l.mod.range))
-      const status = offBase.length ? 'off-base' : !cands.length ? 'unmatched' : cands.length === 1 && !notes.includes('hybrid-or-separate') ? 'exact' : 'ambiguous'
+    const indices = group[0].indices
+    const allSeparate = indices.every((ix) => singleCandidates(idx, lines[ix]).some((m) => m.s === spawn.src && spawn.groups.get(m.g)?.includes(m)))
+    if (allSeparate) notes.push('hybrid-or-separate')
+    for (let k = 0; k < indices.length; k++) {
+      const l = lines[indices[k]]
+      const cands = group.map((h) => describe(ctx, h.mod, k, l.vals, l.mod.range))
+      let status = cands.length === 1 && !notes.includes('hybrid-or-separate') ? 'exact' : 'ambiguous'
+      if (status === 'exact' && ctx.itemLevel !== null && cands[0].tierLevel > ctx.itemLevel) status = 'exact-above-ilvl'
       const lookup = finish(ctx, status, cands, notes.slice())
-      if (span > 1) lookup.hybrid = { lines: span, index: k }
+      lookup.source = 'affix'
+      lookup.hybrid = { lines: indices.length, index: k }
+      if (status === 'exact-above-ilvl') lookup.notes.push(`matched tier requires ilvl ${cands[0].tierLevel} > item level ${ctx.itemLevel}`)
       if (cands.length > 1) lookup.notes.push(`${cands.length} candidate mods`)
-      if (offBase.length && cands.length === 1) lookup.status = 'off-base'
-      l.mod.lookup = lookup
-      // fill what the text did not carry; text-provided {tier}/{prefix}/{suffix}/(a-b) always wins
-      if (lookup.status === 'exact') {
-        if (l.mod.tier === null) l.mod.tier = lookup.tier
-        if (l.mod.rollMin === null && lookup.ranges.length === 1) {
-          l.mod.rollMin = lookup.ranges[0].min
-          l.mod.rollMax = lookup.ranges[0].max
-        }
-      }
-      if (l.mod.affix === null && lookup.affix) l.mod.affix = lookup.affix
+      setLookup(l, lookup)
+      claimed.add(indices[k])
     }
-    i += span
+  }
+  // Pass 2: everything else, line by line.
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    if (!l || claimed.has(i)) continue
+    claimed.add(i)
+    let { source, mods: cset } = resolveLine(ctx, idx, l, item)
+    if (source) {
+      const notes = []
+      if (source === 'affix' && ctx.itemLevel !== null && cset.length > 1) {
+        const ok = cset.filter((m) => m.lv <= ctx.itemLevel)
+        if (ok.length && ok.length < cset.length) notes.push(`excluded ${cset.length - ok.length} tier(s) above item level ${ctx.itemLevel}`)
+        if (ok.length) cset = ok
+      }
+      const cands = cset.map((mod) => describeAny(ctx, mod, 0, l.vals, l.mod.range, source))
+      let status = source !== 'affix' ? 'off-base' : cands.length === 1 ? 'exact' : 'ambiguous'
+      if (status === 'exact' && ctx.itemLevel !== null && cands[0].tierLevel > ctx.itemLevel) status = 'exact-above-ilvl'
+      if (source !== 'affix') notes.push(`resolved via ${source} mods, not this base's normal affixes`)
+      if (cands.length > 1) notes.push(`${cands.length} candidate mods`)
+      const lookup = finish(ctx, status, cands, notes)
+      lookup.source = source
+      if (status === 'exact-above-ilvl') lookup.notes.push(`matched tier requires ilvl ${cands[0].tierLevel} > item level ${ctx.itemLevel}`)
+      setLookup(l, lookup)
+      continue
+    }
+    // Pass 3: sum decomposition (F5) - only for plain explicit/fractured lines with one rolled number.
+    if ((l.mod.kind === 'explicit' || l.mod.kind === 'fractured') && l.vals.length === 1 && l.vals[0].v !== undefined) {
+      const parts = sumParts(ctx, l.t)
+      const combos = parts.length ? sumCombinations(parts, l.vals[0].v) : []
+      if (combos.length) {
+        const described = combos.map((c) => c.map((p) => describePart(ctx, p)))
+        const unique = []
+        const seen = new Set()
+        for (const d of described) {
+          const key = d.map((p) => p.modId).sort().join('+')
+          if (!seen.has(key)) {
+            seen.add(key)
+            unique.push(d)
+          }
+        }
+        const lookup = {
+          status: unique.length === 1 ? 'combined' : 'combined-ambiguous',
+          tier: null,
+          tierLabel: null,
+          affix: null,
+          source: 'affix',
+          candidates: [],
+          combinations: unique,
+          notes: [],
+        }
+        if (unique.length === 1) {
+          lookup.parts = unique[0]
+          const affixes = new Set(unique[0].map((p) => p.affix))
+          if (affixes.size === 1) lookup.affix = [...affixes][0]
+        } else lookup.notes.push(`${unique.length} combinations fit`)
+        l.mod.lookup = lookup
+        if (l.mod.affix === null && lookup.affix) l.mod.affix = lookup.affix
+        continue
+      }
+    }
+    const notes = [singleCandidates(idx, l).length ? 'value is outside every tier range' : 'no mod with this text in the item tables']
+    notes.push('no combination fits')
+    l.mod.lookup = { status: 'unmatched', tier: null, tierLabel: null, affix: null, source: 'unknown', candidates: [], notes }
+  }
+  // Item-level affix budget (F budget constraint): counts assigned prefixes/suffixes, including each part of a
+  // 'combined' line, against the base's prefix/suffix allowance (adjusted for "Modifier allowed" implicits).
+  const budget = affixBudget(item)
+  const counts = { prefix: 0, suffix: 0 }
+  for (const l of lines) {
+    if (!l) continue
+    const lk = l.mod.lookup
+    if (!lk) continue
+    if (lk.parts) for (const p of lk.parts) if (p.affix) counts[p.affix]++
+    else if (lk.affix && (lk.status === 'exact' || lk.status === 'ambiguous' || lk.status === 'exact-above-ilvl')) counts[lk.affix]++
+  }
+  if (counts.prefix > budget.prefix || counts.suffix > budget.suffix) {
+    warnings.push({
+      code: 'affix-budget-exceeded',
+      severity: 'warning',
+      path: `items.byId.${item.id}`,
+      message: `item ${item.id} (${item.name ?? item.base}) has ${counts.prefix} prefixes / ${counts.suffix} suffixes against a budget of ${budget.prefix}/${budget.suffix}`,
+    })
   }
 }
 
 /** Annotate every affix line of every item in a build model, in place. Returns the model. */
 export function annotateModel(model, table) {
+  model.warnings ??= []
   if (!table) {
     model.affixData = null
     return model
   }
   const idx = indexAffixes(table)
-  for (const item of Object.values(model.items.byId)) annotateItem(item, idx)
+  for (const item of Object.values(model.items.byId)) annotateItem(item, idx, model.warnings)
   model.affixData = { schema: table.schema, ...table.source }
   return model
 }

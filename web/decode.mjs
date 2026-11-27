@@ -3,7 +3,7 @@
 // ends dropped, zlib inflate (capped at 8 MB), and the payload must be a <PathOfBuilding2> build.
 import { buildModelOf } from './build-model.mjs'
 import { annotateModel } from './affix-tiers.mjs'
-import { loadAffixTable } from './affix-data.mjs'
+import { loadData } from './affix-data.mjs'
 export { buildModelOf }
 export class DecodeError extends Error {}
 
@@ -71,10 +71,21 @@ export function treeVersionsOf(xml) {
 
 /**
  * Decode a code (or XML) to { xml, model }: the raw XML plus the typed build model (see build-model.mjs), with affix
- * tier lookups filled in (see affix-tiers.mjs). `affixTable` overrides the bundled data/affixes.json; pass null to skip.
+ * tier lookups filled in (see affix-tiers.mjs) and gem ids resolved against the bundled gem table (web/gem-data.mjs).
+ *
+ * Each of `affixTable`/`gemTable`/`uniqueTable`/`treeTable`/`engine` follows the same contract: pass it explicitly
+ * to use it as-is, leave it `undefined` to auto-load the bundled web/data/<name>.json (via web/affix-data.mjs's
+ * loadData), or pass `null` to skip that lookup step entirely. `uniqueTable`/`treeTable`/`engine` aren't built by
+ * any Group A code yet; they're accepted (and ignored) so callers can pass them once a later group adds them,
+ * without this signature changing again.
  */
-export async function decodePobBuild(code, { affixTable } = {}) {
+export async function decodePobBuild(code, { affixTable, gemTable, uniqueTable, treeTable, engine } = {}) {
   const xml = await decodePobCode(code)
-  const table = affixTable === undefined ? await loadAffixTable() : affixTable
-  return { xml, model: annotateModel(buildModelOf(xml), table) }
+  const table = affixTable === undefined ? await loadData('affixes') : affixTable
+  const gems = gemTable === undefined ? await loadData('gems') : gemTable
+  // F1: a flask/charm base's buff lines shift every ModRange id printed after them; web/data/affixes.json's
+  // `bases` entries carry that count (see scripts/extract-affixes.mjs), so thread it through once the table is
+  // loaded (see web/build-model.mjs's parseItem).
+  const bases = table ? Object.fromEntries(Object.entries(table.bases).map(([name, b]) => [name, b[2] ?? 0])) : undefined
+  return { xml, model: annotateModel(buildModelOf(xml, { bases, gemTable: gems }), table) }
 }
