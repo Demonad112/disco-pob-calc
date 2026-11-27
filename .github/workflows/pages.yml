@@ -3,6 +3,7 @@ name: Pages build and deploy
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -85,9 +86,36 @@ jobs:
             dist/manifest.json
           if-no-files-found: ignore
 
+      - name: Release tarball (runtime files, reproducible)
+        run: scripts/release-tarball.sh dist release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pob-calc-release
+          path: release/
+          if-no-files-found: error
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
+
+  # A tag (vX.Y.Z-N, X.Y.Z = PoB2 version) publishes the tarball that upgraded-disco-companion pins by sha256.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pob-calc-release
+          path: release
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file <(cd release && echo "sha256:" && cat *.sha256)
 
   # Only main deploys: the github-pages environment rejects other branches before any step runs.
   deploy:
