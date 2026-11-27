@@ -115,7 +115,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file <(cd release && echo "sha256:" && cat *.sha256)
+        # A release published from the web UI (which creates the tag) already exists: attach the files to it.
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file <(cd release && echo "sha256:" && cat *.sha256)
+          fi
 
   # Only main deploys: the github-pages environment rejects other branches before any step runs.
   deploy:
