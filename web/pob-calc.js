@@ -8,7 +8,7 @@
 // result has upgraded-disco-companion services/pob-engine's shape:
 //   { pobVersion, pinCommit, snapshot: { loadError, stats, fullDpsSkills, export: { PlayerStat, MinionStat,
 //     FullDPSSkill } }, groups: { groups, rows } | null, ms, cached: false }
-// plus mainSkill ({ skill, mainHand: per-type hit averages }), timings and wasmHeapBytes.
+// plus autoConfig ({ baselineDPS, configuredDPS, applied[], suggested[] } when requested, else null), mainSkill ({ skill, mainHand: per-type hit averages }), timings and wasmHeapBytes.
 //
 // Errors reject with an Error whose `kind` is 'decode' (not a PoB2 code), 'engine' (PoB could not calculate the
 // build; the message is PoB's) or 'fatal' (the engine crashed or ran out of memory; the next call starts a new one).
@@ -85,13 +85,15 @@ export function init(opts = {}) {
 /**
  * Calculate one build.
  * @param {string} codeOrXml a PoB2 export code, or its decoded <PathOfBuilding2> XML
- * @param {{ groups?: boolean }} [opts] groups: also recalculate every skill group (slow)
+ * @param {{ groups?: boolean, autoConfig?: boolean | 'apply' | 'suggest' }} [opts] groups: also recalculate every skill group (slow).
+ * autoConfig: enable the Config inputs the build can actually use (charges, Rage, Combo, ES, Daze/Shock, crit-recently)
+ * and report them in result.autoConfig; 'suggest' also computes each situational toggle's isolated delta. Off by default.
  */
 export function calc(codeOrXml, opts = {}) {
   const run = chain.then(async () => {
     await init(initOpts ?? {})
     try {
-      return await send({ type: 'calc', code: codeOrXml, groups: !!opts.groups })
+      return await send({ type: 'calc', code: codeOrXml, groups: !!opts.groups, autoConfig: opts.autoConfig || false })
     } catch (e) {
       if (e.kind === 'fatal') reset() // the next call boots a fresh engine
       throw e

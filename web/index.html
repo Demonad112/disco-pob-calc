@@ -26,6 +26,7 @@
       <button id="upload" type="button" class="secondary">Upload .txt / .xml</button>
       <input type="file" id="file" accept=".txt,.xml,.pob,text/plain,text/xml,application/xml" hidden>
       <label class="check"><input type="checkbox" id="groups"> Recalculate every skill group (slow)</label>
+      <label class="check"><input type="checkbox" id="autocfg"> Auto-configure combat state</label>
     </div>
     <div class="status" id="status" role="status" aria-live="polite"></div>
     <div class="bar" aria-hidden="true"><div id="bar-fill"></div></div>
@@ -42,6 +43,11 @@
       <div><span class="label">Main skill</span><span class="mid" id="main-skill">–</span></div>
       <div><span class="label">Effective HP</span><span class="mid" id="ehp">–</span></div>
     </div>
+    <section class="panel" id="autocfg-panel" hidden>
+      <h2>Auto-configuration <small id="autocfg-sum"></small></h2>
+      <table class="kv" id="autocfg-applied"><tbody></tbody></table>
+      <details id="autocfg-sug"><summary>Situational toggles not applied</summary><table class="kv" id="autocfg-suggested"><tbody></tbody></table></details>
+    </section>
     <div class="grid">
       <section class="panel"><h2>Offence</h2><table class="kv" id="offence"><tbody></tbody></table></section>
       <section class="panel"><h2>Damage split <small>(main hand, average hit)</small></h2><div id="split"></div></section>
