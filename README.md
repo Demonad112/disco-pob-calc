@@ -58,6 +58,8 @@ The result has the same shape as `upgraded-disco-companion`'s `services/pob-engi
 
 `stats` holds every displayStat / extraSaveStat PoB has for the build: DPS, crit, life/ES/mana/spirit, resists and overcap, EHP, max hit per type, block, deflection, evade and more. Errors reject with `err.kind`: `decode` (not a PoB2 code), `engine` (PoB's own error message) or `fatal` (crash or out of memory; the next call starts a fresh engine). Calls are serialised in one module worker. Browsers only start workers from the page's own origin, so another site can't import `pob-calc.js` from the Pages URL. Copy `dist/` (any path) into that site and import it from there; `init({ baseUrl })` points at the folder if it isn't next to `pob-calc.js`.
 
+**Releases.** A tag `vX.Y.Z-N` (X.Y.Z = the pinned PoB2 version, N = this repo's build of it) runs the full CI and publishes `pob-calc-<pinCommit>.tar.gz` (the runtime files of `dist/`, no demo page) and its `.sha256` as a GitHub Release. `scripts/release-tarball.sh` makes it reproducibly from a `dist/`. `upgraded-disco-companion` pins a release by tag and sha256 (`apps/web/pob-calc.lock.json`), unpacks it under `/pob-calc/<pinCommit>/` and fails CI if `pinCommit` differs from its own `vendor/pob2`, so bump both repos together.
+
 ## How it works
 
 | Piece | What |
@@ -113,6 +115,7 @@ The pin is a PoB2 **release tag** commit, not the head of `dev`. Codes are writt
 3. `git -C vendor/pob2 fetch --depth 1 origin <sha> && git -C vendor/pob2 checkout <sha> && git add vendor/pob2`.
 4. Regenerate the oracle in `upgraded-disco-companion` (`npm run pob2:sync -- --commit <sha>`, `npm run pob2:oracle`). Copy `ninja-default/{code.txt,oracle.json,groups.oracle.json}` into `fixtures/oracle/` (see `fixtures/README.md`).
 5. `native/build.sh all && node --test test/parity.test.mjs && node scripts/pack.mjs`. A new Lua construct shows up as a compile-check failure in `pack.mjs`, and a new runtime gap as a parity diff (`parity-diff.json`).
+6. Merge, then tag `vX.Y.Z-1` on `main`. Put the new tag and the release's sha256 in `upgraded-disco-companion`'s `apps/web/pob-calc.lock.json` (`node apps/web/scripts/fetch-pob-calc.mjs --update <tag>`) in the same PR as its `vendor/pob2` bump.
 
 ## Known gaps
 
