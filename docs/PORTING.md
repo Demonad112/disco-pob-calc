@@ -32,6 +32,19 @@ Every error hit while bringing PoB2 v0.23.1 (`7d6f530`) up on this runtime, in o
 
 After those fixes the native build matched the oracle exactly on the first full run (109 stats, 107 PlayerStats, 21 group rows), and so did wasm in Node and Chromium. The `pairs`-order and `#`-border differences between LuaJIT and PUC didn't show up in this build's numbers.
 
+## PoB2's spec suite
+
+`scripts/pob-specs.sh` runs the pinned tag's `spec/System/*_spec.lua` (33 files) one process per file with `CI` set, as PoB's own CI does under LuaJIT, through `lua/spec_runner.lua` (a busted-compatible subset). First run: 551 passed, 23 errors.
+
+| Finding | Fix |
+|---|---|
+| `dkjson.lua:138: attempt to index upvalue '_ENV' (a nil value)` in CompareBuySimilar and TradeQueryRequests: dkjson's `local _ENV = nil` blocks globals on 5.2, and `sortedkeys` calls `table.sort` | `04-env-name-luajit.patch`: the environment upvalue is named `(ENV)`, so `_ENV` is an ordinary name as in LuaJIT |
+| TradeQueryRequests mocks `launch = { DownloadPage = … }` with the wrong signature; the test only passes because busted gives each spec file its own environment, so PoB never sees the mock | the runner loads each spec with its own environment (reads fall through to `_G`) |
+| TestSocketables calls `it(name, slotTypeTest(...))`: the checks run while the tests are being defined and `it` gets `nil` | `it` without a function is pending, as in busted (18 pending; their assertions still run at load) |
+| TestCompareBuySimilar calls `getfenv` on a PoB closure | a LuaJIT-style `getfenv` in the spec environment only; PoB's own code never uses `getfenv`/`setfenv` |
+
+After those: 566 passed, 0 failed, 18 pending. TestTriggers has no tests at this tag.
+
 ## Runtime settings
 
 - GC pause 200 after start (PoB sets 400, which lets the heap grow to ~4× live).

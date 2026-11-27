@@ -4,7 +4,7 @@ Path of Building 2's own calc engine, running fully in the browser: PoB2's Lua (
 
 **Demo:** https://demonad112.github.io/disco-pob-calc/ (paste a PoB2 code, or press *Load sample code*)
 
-Status: prototype. It reproduces PoB2 v0.23.1 exactly for the reference build: TotalDPS 186,706, and all 109 stats, 107 PlayerStats and 21 skill-group rows of the LuaJIT oracle, with 0 mismatches at 1e-9 relative tolerance.
+Status: prototype. It reproduces PoB2 v0.23.1 exactly for the reference build: TotalDPS 186,706, and all 109 stats, 107 PlayerStats and 21 skill-group rows of the LuaJIT oracle, with 0 mismatches at 1e-9 relative tolerance. PoB2's own spec suite at the same tag (33 files, 566 tests whose expected values were written against LuaJIT) also passes on this runtime.
 
 ## Numbers
 
@@ -64,8 +64,9 @@ The result has the same shape as `upgraded-disco-companion`'s `services/pob-engi
 |---|---|
 | `vendor/pob2` | Submodule: `Demonad112/PathOfBuilding-PoE2` at `7d6f530` (tag v0.23.1). Never edited. |
 | `third_party/` | Pristine Lua 5.2.4, LuaBitOp 1.0.2, luautf8 0.1.6, zlib 1.3.1. |
-| `native/patches/` | Three small Lua patches so PoB runs as on its LuaJIT (below). |
+| `native/patches/` | Four small Lua patches so PoB runs as on its LuaJIT (below). |
 | `native/pobcalc.c` | The host: `bit` as a global, `lua-utf8`, `pobhost` (zlib inflate/deflate, chdir, clock). Builds natively (CLI) and with emcc (`pob_boot` / `pob_eval`). |
+| `lua/spec_runner.lua` | A small busted-compatible runner for PoB2's own `spec/` (each file in its own environment, as busted does). |
 | `lua/` | `headless.lua` and `groups_lib.lua` from the companion's `tools/pob2` (ported: no ffi, a `jit` stub, real `Inflate`/`Deflate`), `calc.lua` (serve.lua's per-build logic). |
 | `scripts/pack.mjs` | Builds `dist/`: compiles every Lua file inside the wasm engine (the compile check), then writes gzipped packs and `manifest.json`. |
 | `web/` | `pob-calc.js` (API), `pob-worker.js` (module worker: cache, gunzip, tree prefetch), `decode.mjs`, demo page. |
@@ -77,6 +78,7 @@ The result has the same shape as `upgraded-disco-companion`'s `services/pob-engi
 1. `01-compound-assign`: `+= -= *= /= %= ^= ..=` on one target. A table and key are evaluated once (`t[f()] += 1` calls `f` once).
 2. `02-gsub-replacement-5.1`: `%x` with a non-digit `x` in a `gsub` replacement adds `x`, as in 5.1/LuaJIT. 5.2 raises an error, which broke `Classes/TradeHelpers.lua` at start.
 3. `03-format-int-luajit`: `%d`/`%x` truncate like LuaJIT on x86-64, with NaN and ±inf becoming INT64_MIN. 5.2 raises "not a number in proper range", which broke a breakdown line in `Modules/CalcDefence.lua`; a plain C cast would trap in wasm.
+4. `04-env-name-luajit`: `_ENV` is an ordinary name, as in LuaJIT. `dkjson.lua` declares `local _ENV = nil` to block globals on 5.2, and PoB's `sortedkeys` in that file calls the global `table.sort`, so on 5.2 every sorted JSON encode (trade URLs, trade searches) raised "attempt to index upvalue '_ENV'". Found by PoB2's spec suite.
 
 The porting log is in [`docs/PORTING.md`](docs/PORTING.md).
 
@@ -86,10 +88,11 @@ Needs: gcc, Node 22, emsdk 4.0.10 (`source "$(scripts/install-emsdk.sh 4.0.10)"`
 
 ```sh
 git submodule update --init --depth 1      # full fork, ~400 MB (mostly tree art)
-# or: scripts/checkout-pob2.sh             # pinned commit, calc files only (~40 MB, what CI uses)
+# or: scripts/checkout-pob2.sh --specs     # pinned commit, calc files + spec/ only (~40 MB, what CI uses)
 npm ci
 native/build.sh all                        # build/native/pobcalc + dist/engine.{mjs,wasm}
 build/native/pobcalc test/lua/compound_spec.lua
+scripts/pob-specs.sh                       # PoB2's own spec suite on the native host (~70 s on 4 cores; needs checkout-pob2.sh --specs)
 node --test test/parity.test.mjs           # wasm vs oracle, snapshot + every group (~30 s)
 node scripts/pack.mjs                      # dist/ (+ size table); --bytecode for bytecode packs
 PARITY_SOURCE=dist PARITY_GROUPS=0 node --test test/parity.test.mjs   # the shipped packs alone
@@ -113,7 +116,7 @@ The pin is a PoB2 **release tag** commit, not the head of `dev`. Codes are writt
 
 ## Known gaps
 
-- **Exactness is proven for one build.** The reference code matches exactly. Other builds could still hit PUC-vs-LuaJIT differences: `pairs` order, `#` on tables with holes, `table.sort` raising "invalid order function" on an inconsistent comparator. Each one found becomes a documented patch.
+- **Exactness is proven for one full build, plus PoB2's spec suite.** The reference code matches the oracle exactly, and the 566 spec tests (targeted calc, item, tree and import scenarios) pass. They run natively in CI; the wasm build uses the same C and Lua, and the parity tests check that it matches native. Other builds could still hit PUC-vs-LuaJIT differences: `pairs` order, `#` on tables with holes, `table.sort` raising "invalid order function" on an inconsistent comparator. Each one found becomes a documented patch.
 - **Memory.** ~370 MB of wasm memory after a calc, ~530 MB with all groups. Desktop browsers are fine. Phones, iOS Safari especially, may run out of memory; untested.
 - **Speed.** About 1.1–1.3× native PUC Lua and slower than LuaJIT (there's no JIT in wasm). Groups take ~20 s, so they're opt-in.
 - **Not included:** tree art and the PoB UI; network features (`lcurl` stays stubbed, so no account/trade/poe.ninja import); timeless-jewel lookup tables that PoB downloads at runtime. The first-run update check and `Settings.xml` are absent by design.

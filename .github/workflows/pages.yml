@@ -25,8 +25,8 @@ jobs:
         with:
           submodules: false
 
-      - name: Check out PoB2 (pinned, calc files only)
-        run: scripts/checkout-pob2.sh
+      - name: Check out PoB2 (pinned, calc files and specs)
+        run: scripts/checkout-pob2.sh --specs
 
       - uses: actions/setup-node@v4
         with:
@@ -50,6 +50,9 @@ jobs:
 
       - name: Patch spec (compound assignment, 5.1 gsub, LuaJIT %d, host modules)
         run: build/native/pobcalc test/lua/compound_spec.lua
+
+      - name: PoB2's own spec suite on PUC Lua 5.2 (expected values written against LuaJIT)
+        run: scripts/pob-specs.sh
 
       - name: Parity, repo files (snapshot + every skill group)
         run: node --test test/parity.test.mjs

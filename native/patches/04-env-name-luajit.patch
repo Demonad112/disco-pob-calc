@@ -1,0 +1,18 @@
+diff -ru a/src/luaconf.h b/src/luaconf.h
+--- a/src/luaconf.h	2026-11-26 21:30:51.492377275 +0000
++++ b/src/luaconf.h	2026-11-26 21:30:51.503241292 +0000
+@@ -128,7 +128,13 @@
+ @@ environment, used to access global names.
+ ** CHANGE it if you do not like this name.
+ */
+-#define LUA_ENV		"_ENV"
++/*
++** disco-pob-calc patch: LuaJIT semantics for the name _ENV. LuaJIT (Lua 5.1) treats _ENV as an ordinary
++** name, so `local _ENV = nil` (dkjson.lua: "blocking globals in Lua 5.2") does nothing there, while on 5.2
++** it makes every later global lookup in the file fail (dkjson's sortedkeys calls table.sort). The
++** environment upvalue gets a name no Lua code can spell, so a user `_ENV` is a plain local or global.
++*/
++#define LUA_ENV		"(ENV)"
+ 
+ 
+ /*
