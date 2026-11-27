@@ -2,6 +2,8 @@
 // Same rules as upgraded-disco-companion services/pob-engine/src/decode.mjs: base64url, line breaks and `?` at the
 // ends dropped, zlib inflate (capped at 8 MB), and the payload must be a <PathOfBuilding2> build.
 import { buildModelOf } from './build-model.mjs'
+import { annotateModel } from './affix-tiers.mjs'
+import { loadAffixTable } from './affix-data.mjs'
 export { buildModelOf }
 export class DecodeError extends Error {}
 
@@ -67,8 +69,12 @@ export function treeVersionsOf(xml) {
   return [...out]
 }
 
-/** Decode a code (or XML) to { xml, model }: the raw XML plus the typed build model (see build-model.mjs). */
-export async function decodePobBuild(code) {
+/**
+ * Decode a code (or XML) to { xml, model }: the raw XML plus the typed build model (see build-model.mjs), with affix
+ * tier lookups filled in (see affix-tiers.mjs). `affixTable` overrides the bundled data/affixes.json; pass null to skip.
+ */
+export async function decodePobBuild(code, { affixTable } = {}) {
   const xml = await decodePobCode(code)
-  return { xml, model: buildModelOf(xml) }
+  const table = affixTable === undefined ? await loadAffixTable() : affixTable
+  return { xml, model: annotateModel(buildModelOf(xml), table) }
 }

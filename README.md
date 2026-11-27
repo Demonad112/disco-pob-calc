@@ -115,7 +115,12 @@ The pin is a PoB2 **release tag** commit, not the head of `dev`. Codes are writt
 3. `git -C vendor/pob2 fetch --depth 1 origin <sha> && git -C vendor/pob2 checkout <sha> && git add vendor/pob2`.
 4. Regenerate the oracle in `upgraded-disco-companion` (`npm run pob2:sync -- --commit <sha>`, `npm run pob2:oracle`). Copy `ninja-default/{code.txt,oracle.json,groups.oracle.json}` into `fixtures/oracle/` (see `fixtures/README.md`).
 5. `native/build.sh all && node --test test/parity.test.mjs && node scripts/pack.mjs`. A new Lua construct shows up as a compile-check failure in `pack.mjs`, and a new runtime gap as a parity diff (`parity-diff.json`).
-6. Merge, then tag `vX.Y.Z-1` on `main`. Put the new tag and the release's sha256 in `upgraded-disco-companion`'s `apps/web/pob-calc.lock.json` (`node apps/web/scripts/fetch-pob-calc.mjs --update <tag>`) in the same PR as its `vendor/pob2` bump.
+6. Regenerate the affix lookup: `node scripts/extract-affixes.mjs` (reads `vendor/pob2`, writes `web/data/affixes.json`) and commit it.
+7. Merge, then tag `vX.Y.Z-1` on `main`. Put the new tag and the release's sha256 in `upgraded-disco-companion`'s `apps/web/pob-calc.lock.json` (`node apps/web/scripts/fetch-pob-calc.mjs --update <tag>`) in the same PR as its `vendor/pob2` bump.
+
+## Affix tiers
+
+`decodePobBuild` fills each explicit mod line with `lookup`: `status` (`exact`, `ambiguous`, `off-base`, `unmatched`, `no-base`, `not-covered`), `tier` / `tierOf` / `tierLabel` ("T2", or "T2 or T3" when ambiguous), `affix` (prefix/suffix), `ranges`, `rollPosition`, `topTier` and `bestAvailable` (best tier at the item level), `candidates` and `notes`. Exact matches also fill the line's `tier`, `affix`, `rollMin`, `rollMax` when the item text had none. Data is built from the fork's `ModItem/ModJewel/ModFlask/ModCharm.lua` and `Bases/*.lua` by `scripts/extract-affixes.mjs`; see `web/affix-tiers.mjs` for the matching rules. Limits: desecrated and crafted mods are not in those tables, a line that sums several mods (or a runeforged bonus) shows as `unmatched`, and a hybrid whose lines are also separately valid is flagged `hybrid-or-separate`. Pass `{ affixTable: null }` to skip it.
 
 ## Known gaps
 
