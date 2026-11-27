@@ -218,6 +218,28 @@ $('sample').addEventListener('click', async () => {
   codeEl.value = (await (await fetch('sample-code.txt')).text()).trim()
   if (!calcBtn.disabled) run()
 })
+async function loadFile(file) {
+  if (!file) return
+  try {
+    codeEl.value = (await file.text()).trim()
+    setStatus(`Loaded ${file.name} (${(file.size / 1024).toFixed(1)} KB).`)
+    if (!calcBtn.disabled) run()
+  } catch (e) {
+    setStatus(`Could not read ${file.name}: ${e.message}`, true)
+  }
+}
+$('upload').addEventListener('click', () => $('file').click())
+$('file').addEventListener('change', (e) => {
+  loadFile(e.target.files[0])
+  e.target.value = ''
+})
+codeEl.addEventListener('dragover', (e) => e.preventDefault())
+codeEl.addEventListener('drop', (e) => {
+  const f = e.dataTransfer?.files?.[0]
+  if (!f) return
+  e.preventDefault()
+  loadFile(f)
+})
 calcBtn.addEventListener('click', run)
 codeEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !calcBtn.disabled) run()
