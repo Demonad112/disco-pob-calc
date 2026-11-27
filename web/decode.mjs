@@ -1,6 +1,8 @@
 // PoB2 export code -> XML, in the browser and in Node (both have DecompressionStream).
 // Same rules as upgraded-disco-companion services/pob-engine/src/decode.mjs: base64url, line breaks and `?` at the
 // ends dropped, zlib inflate (capped at 8 MB), and the payload must be a <PathOfBuilding2> build.
+import { buildModelOf } from './build-model.mjs'
+export { buildModelOf }
 export class DecodeError extends Error {}
 
 const MAX_XML_BYTES = 8 << 20
@@ -63,4 +65,10 @@ export function treeVersionsOf(xml) {
   const out = new Set()
   for (const m of xml.matchAll(/<Spec\b[^>]*\btreeVersion="([0-9_]+)"/g)) out.add(m[1])
   return [...out]
+}
+
+/** Decode a code (or XML) to { xml, model }: the raw XML plus the typed build model (see build-model.mjs). */
+export async function decodePobBuild(code) {
+  const xml = await decodePobCode(code)
+  return { xml, model: buildModelOf(xml) }
 }

@@ -147,7 +147,7 @@ async function main() {
   // Engine + web files.
   const engineWasm = readFileSync(join(DIST, 'engine.wasm'))
   const engineJs = readFileSync(join(DIST, 'engine.mjs'))
-  for (const f of ['index.html', 'pob-calc.js', 'pob-worker.js', 'decode.mjs', 'engine-core.mjs', 'pack.mjs', 'demo.js', 'demo.css']) {
+  for (const f of ['index.html', 'pob-calc.js', 'pob-worker.js', 'decode.mjs', 'build-model.mjs', 'xml-lite.mjs', 'engine-core.mjs', 'pack.mjs', 'demo.js', 'demo.css']) {
     try {
       copyFileSync(join(ROOT, 'web', f), join(DIST, f))
     } catch (e) {
