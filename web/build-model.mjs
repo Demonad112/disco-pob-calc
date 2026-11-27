@@ -197,12 +197,13 @@ function config(root) {
   }
 }
 
-/** Typed model for one decoded PoB2 build (XML string). */
-export function buildModelOf(xml) {
+/** Typed model for one decoded PoB2 build (XML string). `extra.stats` (e.g. calc()'s `snapshot.resistMax`) is merged
+ *  over the XML's PlayerStats, so resist caps become exact (`capSource: 'engine'`) instead of derived/assumed. */
+export function buildModelOf(xml, extra = {}) {
   const root = parseXml(xml)
   if (!root || root.tag !== 'PathOfBuilding2') throw new Error('Not a PathOfBuilding2 document.')
   const build = child(root, 'Build')
-  const stats = build ? playerStats(build) : {}
+  const stats = { ...(build ? playerStats(build) : {}), ...(extra.stats ?? {}) }
   const tree = child(root, 'Tree')
   const specs = kids(tree, 'Spec')
   const spec = specs[Number(tree?.attrs.activeSpec) - 1] ?? specs[0]

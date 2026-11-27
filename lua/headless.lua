@@ -281,6 +281,16 @@ function M.snapshot(loadError)
 		end
 	end
 	snap.stats = stats
+	-- Exact max resistances (PoB keeps no output.<Elem>ResistMax; Missing<Elem>Resist = max - final, so their sum is the
+	-- max). Kept out of `stats`/`export` so those stay byte-for-byte what PoB itself writes (oracle parity).
+	local resistMax = object()
+	for _, el in ipairs({ "Fire", "Cold", "Lightning", "Chaos" }) do
+		local final, missing = output[el .. "Resist"], output["Missing" .. el .. "Resist"]
+		if type(final) == "number" and type(missing) == "number" then
+			resistMax[el .. "ResistMax"] = final + missing
+		end
+	end
+	snap.resistMax = resistMax
 	snap.fullDpsSkills = fullDpsRows(output.SkillDPS)
 	snap.export = exported()
 	return snap
