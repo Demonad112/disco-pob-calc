@@ -13,7 +13,13 @@
 //   const code = await encodePobCode(xml2)          // web/encode.mjs; or pass xml2 straight to engine.calc()
 //
 // Ops: setMod, addMod, removeMod, setItem | addGem, removeGem, setGem, setGroup | setConfig.
-// Not handled here: item text parsing beyond mod lines, tree/spec edits, gem data lookup (callers supply gem ids).
+// Not handled here: item text parsing beyond mod lines, tree/spec edits.
+//
+// addGem resolves `gem.name` to ids via `options.gemTable` (web/gem-data.mjs's resolveGem, built by
+// scripts/extract-gems.mjs) when the edit doesn't already pass `gem.gemId`; an edit that already carries explicit
+// ids behaves exactly as before, table or not.
+
+import { resolveGem } from './gem-data.mjs'
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
 const escAttr = (s) => String(s).replace(/[&<>"]/g, (c) => ESC[c])
@@ -79,9 +85,12 @@ function itemLines(text) {
   let p = 0
   let implicitsAt = -1
   let implicitCount = 0
-  if (/^Rarity:\s*/i.test(lines[idx[0]]?.trim() ?? '')) p = 1
+  const r0 = /^Rarity:\s*/i.test(lines[idx[0]]?.trim() ?? '') ? 1 : 0
+  if (r0) p = 1
   const rarity = (/^Rarity:\s*(.+)$/i.exec(lines[idx[0]]?.trim() ?? '')?.[1] ?? '').toUpperCase()
-  p += rarity === 'NORMAL' || rarity === 'MAGIC' ? 1 : 2
+  const single = rarity === 'NORMAL' || rarity === 'MAGIC'
+  const base = (single ? lines[idx[r0]] : lines[idx[r0 + 1]])?.trim() ?? null
+  p += single ? 1 : 2
   for (; p < idx.length; p++) {
     const l = lines[idx[p]].trim()
     const im = /^Implicits:\s*(\d+)/.exec(l)
@@ -103,7 +112,26 @@ function itemLines(text) {
     }
     mods.push(idx[p])
   }
-  return { lines, mods, implicitsAt, implicitCount, firstFlag }
+  return { lines, mods, implicitsAt, implicitCount, firstFlag, base }
+}
+
+// F1 (see web/build-model.mjs's parseItem for the full explanation): a flask/charm base's ModRange ids are offset
+// by its buff-line count, which never appears as item text. `bases` (an optional { baseName: buffCount } map, the
+// same shape web/decode.mjs builds from affixes.json) resolves it the same way parseItem does: exact base name,
+// or the longest known base name the (possibly magic-prefixed) base line contains. Without `bases`, or when the
+// base isn't in it, fall back to re-deriving it from the ModRange ids already on the item: a buff-shifted item's
+// ids run past the item's own mod-line count by exactly the buff count (confirmed against every base in the
+// fixture: non-flask/charm bases always have ModRange ids <= the mod count).
+function buffOf(ctx, bases) {
+  if (bases && ctx.layout.base !== null) {
+    if (Object.hasOwn(bases, ctx.layout.base)) return bases[ctx.layout.base] ?? 0
+    const key = Object.keys(bases)
+      .sort((a, b) => b.length - a.length)
+      .find((b) => ctx.layout.base.includes(b))
+    if (key !== undefined) return bases[key] ?? 0
+  }
+  const maxId = ctx.ranges.reduce((m, r) => Math.max(m, r.id), 0)
+  return Math.max(0, maxId - ctx.layout.mods.length)
 }
 
 const TAGS = /^(\s*)((?:\{[A-Za-z_]+(?::[^}]*)?\})*)(.*)$/
@@ -140,9 +168,10 @@ function modLineOf(ctx, index) {
   return at
 }
 
-function setMod(xml, e) {
+function setMod(xml, e, options) {
   const node = itemNode(xml, e.itemId)
   const ctx = openItem(xml, node)
+  const buff = buffOf(ctx, options?.bases)
   const at = modLineOf(ctx, e.index)
   const lines = [...ctx.layout.lines]
   const m = TAGS.exec(lines[at].replace(/\r$/, ''))
@@ -151,15 +180,16 @@ function setMod(xml, e) {
   else if (e.range === undefined) throw new EditError('setMod needs text, line or range.')
   let ranges = ctx.ranges
   if (e.range !== undefined) {
-    ranges = ranges.filter((r) => r.id !== e.index + 1)
-    if (e.range !== null) ranges.push({ id: e.index + 1, range: String(e.range) })
+    ranges = ranges.filter((r) => r.id !== e.index + 1 + buff)
+    if (e.range !== null) ranges.push({ id: e.index + 1 + buff, range: String(e.range) })
   }
   return closeItem(xml, node, ctx, lines, ranges)
 }
 
-function addMod(xml, e) {
+function addMod(xml, e, options) {
   const node = itemNode(xml, e.itemId)
   const ctx = openItem(xml, node)
+  const buff = buffOf(ctx, options?.bases)
   const lines = [...ctx.layout.lines]
   const { mods, firstFlag } = ctx.layout
   const last = mods.length ? mods[mods.length - 1] : ctx.layout.implicitsAt
@@ -170,20 +200,21 @@ function addMod(xml, e) {
   const insertAt = Math.min(last + 1, firstFlag ?? Infinity)
   lines.splice(insertAt, 0, indent + text)
   const ranges = [...ctx.ranges]
-  if (e.range !== undefined && e.range !== null) ranges.push({ id: mods.length + 1, range: String(e.range) })
+  if (e.range !== undefined && e.range !== null) ranges.push({ id: mods.length + 1 + buff, range: String(e.range) })
   return closeItem(xml, node, ctx, lines, ranges)
 }
 
-function removeMod(xml, e) {
+function removeMod(xml, e, options) {
   const node = itemNode(xml, e.itemId)
   const ctx = openItem(xml, node)
+  const buff = buffOf(ctx, options?.bases)
   const at = modLineOf(ctx, e.index)
   const lines = [...ctx.layout.lines]
   if (e.index < ctx.layout.implicitCount) {
     lines[ctx.layout.implicitsAt] = lines[ctx.layout.implicitsAt].replace(/Implicits:\s*\d+/, `Implicits: ${ctx.layout.implicitCount - 1}`)
   }
   lines.splice(at, 1)
-  const gone = e.index + 1
+  const gone = e.index + 1 + buff
   const ranges = ctx.ranges.filter((r) => r.id !== gone).map((r) => (r.id > gone ? { ...r, id: r.id - 1 } : r))
   return closeItem(xml, node, ctx, lines, ranges)
 }
@@ -226,10 +257,18 @@ function gemAttrs(gem) {
   return keys.map((k) => `${k}="${escAttr(a[k])}"`).join(' ')
 }
 
-function addGem(xml, e) {
+function resolveGemEdit(gem, gemTable) {
+  if (gem.gemId || !gem.name || !gemTable) return gem
+  const match = resolveGem(gemTable, gem.name)
+  if (!match) throw new EditError(`No gem named "${gem.name}" in the gem table.`)
+  if (match.ambiguous) throw new EditError(`Gem name "${gem.name}" is ambiguous: ${match.ambiguous.map((g) => g.key).join(', ')}`)
+  return { ...gem, gemId: match.gemId, skillId: gem.skillId ?? match.skillId, variantId: gem.variantId ?? match.variantId }
+}
+
+function addGem(xml, e, options) {
   const g = groupNode(xml, e.group)
   const gems = kidsOf(g, 'Gem')
-  const xmlGem = `<Gem ${gemAttrs(e.gem)}/>`
+  const xmlGem = `<Gem ${gemAttrs(resolveGemEdit(e.gem, options?.gemTable))}/>`
   if (g.selfClosed) {
     const ind = indentOf(xml, g)
     const open = xml.slice(g.start, g.openEnd).replace(/\s*\/>$/, '>')
@@ -307,13 +346,16 @@ function setConfig(xml, e) {
 
 const OPS = { setMod, addMod, removeMod, setItem, addGem, removeGem, setGem, setGroup, setConfig }
 
-/** Apply edits in order; returns the new XML. Throws EditError on a target that does not exist. */
-export function editBuild(xml, edits) {
+/** Apply edits in order; returns the new XML. Throws EditError on a target that does not exist.
+ *  `options.bases` (an optional { baseName: buffCount } map, the same shape web/decode.mjs builds from
+ *  affixes.json) resolves a flask/charm's ModRange offset (F1) the way it does on decode; without it, setMod/
+ *  addMod/removeMod re-derive the offset from the ModRange ids already on the item (see buffOf above). */
+export function editBuild(xml, edits, options) {
   let out = xml
   for (const e of edits ?? []) {
     const f = OPS[e?.op]
     if (!f) throw new EditError(`Unknown edit op: ${e?.op}`)
-    out = f(out, e)
+    out = f(out, e, options)
   }
   return out
 }

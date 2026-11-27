@@ -34,6 +34,17 @@ jobs:
           node-version: 22
           cache: npm
 
+      - run: npm ci
+
+      - name: Decoder/model tests (build-model, build-edit, extracted-data freshness)
+        run: |
+          npm run test:model
+          npm run test:edit
+          node --test test/data-fresh.test.mjs
+          node --test test/affix-tiers.test.mjs
+          node --test test/modrange.test.mjs
+          node --test test/gem-data.test.mjs
+
       # emsdk pinned by tag (scripts/install-emsdk.sh): no `emsdk update`, which fetches an unpinned archive of
       # emsdk HEAD from github.com and failed a run with a 504.
       - uses: actions/cache@v4
@@ -43,8 +54,6 @@ jobs:
 
       - name: Install emsdk ${{ env.EMSDK_VERSION }}
         run: scripts/install-emsdk.sh "$EMSDK_VERSION" "$HOME/emsdk"
-
-      - run: npm ci
 
       - name: Build native host and wasm engine
         run: native/build.sh all

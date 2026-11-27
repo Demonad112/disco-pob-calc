@@ -9,6 +9,7 @@
     "build:native": "native/build.sh native",
     "pack": "node scripts/pack.mjs",
     "build": "native/build.sh all && node scripts/pack.mjs",
+    "extract": "node scripts/extract-affixes.mjs && node scripts/extract-gems.mjs",
     "test:model": "node --test test/build-model.test.mjs",
     "test:edit": "node --test test/build-edit.test.mjs",
     "test:spec": "build/native/pobcalc test/lua/compound_spec.lua",

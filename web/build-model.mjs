@@ -3,7 +3,7 @@
 // a later encode/edit round-trip (P1) can write changes back without re-deriving them.
 import { child, kids, parseXml } from './xml-lite.mjs'
 
-export const MODEL_VERSION = 1
+export const MODEL_VERSION = 2
 const DEFAULT_RESIST_CAP = 75
 const num = (v) => (v === undefined || v === 'nil' || v === '' || Number.isNaN(Number(v)) ? null : Number(v))
 const bool = (v, dflt = false) => (v === undefined || v === 'nil' ? dflt : v === 'true')
@@ -64,7 +64,9 @@ function parseModLine(raw) {
   }
 }
 
-export function parseItem(node) {
+const BASE_NAME_CACHE = new WeakMap()
+
+export function parseItem(node, opts = {}) {
   const lines = node.text.split('\n').map((l) => l.replace(/\r$/, '').trim()).filter((l) => l !== '')
   const item = { id: num(node.attrs.id), rarity: null, name: null, base: null, headers: {}, mods: [], corrupted: false, mirrored: false, unidentified: false, sockets: null, runes: [], raw: node.text }
   let i = 0
@@ -108,19 +110,49 @@ export function parseItem(node) {
   item.levelReq = num(item.headers.LevelReq)
   item.sockets = item.headers.Sockets ?? null
   for (const m of item.mods) m.corrupted = item.corrupted
-  // <ModRange id range>: id is the 1-based position in the item's mod-line list (implicits first)
-  for (const r of kids(node, 'ModRange')) {
-    const m = item.mods[Number(r.attrs.id) - 1]
+  // <ModRange id range>: PoB's loader walks buffModLines -> enchantModLines -> implicitModLines -> explicitModLines
+  // (runeModLines are skipped - the save side writes enchant, rune, implicit, explicit instead; that asymmetry is
+  // in PoB itself, not something to "fix" here) to turn a 1-based `id` into a mod line. A flask/charm base's own
+  // buffModLines (its granted-buff text, e.g. a charm's "Immune to X") are never printed as item text, so every id
+  // printed after them is shifted by that many slots; nothing else in this fixture's bases has a nonzero count
+  // (F1). `opts.bases` is a { baseName: buffLineCount } lookup (see scripts/extract-affixes.mjs's `bases[name][2]`
+  // via web/gem-data.mjs-style loaders); an unknown base falls back to 0 and records a model warning.
+  const basesBuff = opts.bases
+  const modRanges = kids(node, 'ModRange')
+  const maxId = modRanges.reduce((m, r) => Math.max(m, Number(r.attrs.id)), 0)
+  // No bases table at all: re-derive the offset from the ids already on the item (same heuristic
+  // web/build-edit.mjs's buffOf uses) rather than silently assuming 0.
+  let buff = basesBuff ? 0 : Math.max(0, maxId - item.mods.length)
+  if (basesBuff && item.base !== null) {
+    // Magic items print "<prefix> <BaseName> of <suffix>" as their base line (see item.base above): fall back to
+    // the longest known base name the text contains, same rule web/affix-tiers.mjs's resolveBase uses.
+    const key = Object.hasOwn(basesBuff, item.base)
+      ? item.base
+      : (BASE_NAME_CACHE.get(basesBuff) ?? BASE_NAME_CACHE.set(basesBuff, Object.keys(basesBuff).sort((a, b) => b.length - a.length)).get(basesBuff)).find(
+          (b) => item.base.includes(b),
+        )
+    if (key !== undefined) buff = basesBuff[key] ?? 0
+    else {
+      opts.warnings?.push({
+        code: 'unknown-base-for-modrange',
+        severity: 'warning',
+        path: `items.byId.${item.id}`,
+        message: `item ${item.id}: base "${item.base}" is not in the bases table; assuming 0 buff lines for ModRange offsets`,
+      })
+    }
+  }
+  for (const r of modRanges) {
+    const m = item.mods[Number(r.attrs.id) - 1 - buff]
     if (m && m.range === null) m.range = num(r.attrs.range)
   }
   return item
 }
 
-function items(root) {
+function items(root, opts) {
   const itemsNode = child(root, 'Items')
   if (!itemsNode) return { activeItemSet: null, byId: {}, slots: {}, sockets: [] }
   const byId = {}
-  for (const n of kids(itemsNode, 'Item')) byId[n.attrs.id] = parseItem(n)
+  for (const n of kids(itemsNode, 'Item')) byId[n.attrs.id] = parseItem(n, opts)
   const sets = kids(itemsNode, 'ItemSet')
   const set = sets.find((s) => s.attrs.id === itemsNode.attrs.activeItemSet) ?? sets[0]
   const slots = {}
@@ -135,7 +167,16 @@ function items(root) {
 
 const isSupport = (g) => /SupportGem/.test(g.gemId ?? '') || /^Support/.test(g.skillId ?? '')
 
-function skills(root, mainSocketGroup) {
+// Gem #6: look the item's gemId up in the bundled gem table (web/data/gems.json / web/gem-data.mjs) by exact id,
+// falling back to its display name (an older/newer table might not have that exact gemId). null when there's no
+// table or no match, never guessed.
+function gemDataOf(gemTable, g) {
+  if (!gemTable) return null
+  const row = gemTable.gems.find((row) => row.gemId === g.attrs.gemId) ?? gemTable.gems.find((row) => row.name === g.attrs.nameSpec)
+  return row ? { tags: row.tags, gemType: row.gemType, naturalMaxLevel: row.naturalMaxLevel } : null
+}
+
+function skills(root, mainSocketGroup, gemTable) {
   const node = child(root, 'Skills')
   if (!node) return { activeSkillSet: null, groups: [] }
   const sets = kids(node, 'SkillSet')
@@ -153,6 +194,7 @@ function skills(root, mainSocketGroup) {
       corrupted: bool(g.attrs.corrupted) || (num(g.attrs.corruptLevel) ?? 0) > 0,
       support: isSupport(g.attrs),
       count: num(g.attrs.count),
+      gemData: gemDataOf(gemTable, g),
     }))
     return {
       index: idx,
@@ -208,9 +250,11 @@ export function buildModelOf(xml, extra = {}) {
   const specs = kids(tree, 'Spec')
   const spec = specs[Number(tree?.attrs.activeSpec) - 1] ?? specs[0]
   const mainSocketGroup = num(build?.attrs.mainSocketGroup)
-  const it = items(root)
+  const warnings = []
+  const it = items(root, { bases: extra.bases, warnings })
   return {
     modelVersion: MODEL_VERSION,
+    warnings,
     character: {
       class: build?.attrs.className ?? null,
       ascendancy: build?.attrs.ascendClassName && build.attrs.ascendClassName !== 'None' ? build.attrs.ascendClassName : null,
@@ -221,7 +265,7 @@ export function buildModelOf(xml, extra = {}) {
     },
     resists: resists(stats),
     items: it,
-    skills: skills(root, mainSocketGroup),
+    skills: skills(root, mainSocketGroup, extra.gemTable),
     config: config(root),
   }
 }
