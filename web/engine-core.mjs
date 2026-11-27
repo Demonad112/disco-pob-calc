@@ -26,13 +26,15 @@ export function wrapEngine(Module) {
       )
       return JSON.parse(json)
     },
-    /** Calculate one decoded build XML. Returns calc.lua's { snapshot, groups, timings } or { error, timings }. */
-    calc(xml, { groups = false } = {}) {
+    /** Calculate one decoded build XML. Returns calc.lua's { snapshot, groups, autoConfig, timings } or { error, timings }.
+     *  autoConfig: false (as exported), true/'apply' (enable usable Config inputs), 'suggest' (+ per-toggle deltas). */
+    calc(xml, { groups = false, autoConfig = false } = {}) {
+      const auto = autoConfig === 'suggest' ? '"suggest"' : autoConfig ? '"apply"' : 'nil'
       Module.FS.writeFile('/tmp/build.xml', xml)
       const json = evalLua(
         `local f = assert(io.open("/tmp/build.xml", "rb")); local xml = f:read("*a"); f:close()
          os.remove("/tmp/build.xml")
-         return CALC.calc(xml, ${groups ? 'true' : 'false'})`,
+         return CALC.calc(xml, ${groups ? 'true' : 'false'}, { autoConfig = ${auto} })`,
       )
       return JSON.parse(json)
     },

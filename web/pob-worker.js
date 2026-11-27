@@ -139,7 +139,7 @@ async function init(base) {
   return info
 }
 
-async function calc(code, groups) {
+async function calc(code, groups, autoConfig) {
   const t0 = performance.now()
   const timings = {}
   let t = performance.now()
@@ -152,7 +152,7 @@ async function calc(code, groups) {
   timings.treeMs = performance.now() - t
 
   t = performance.now()
-  const r = engine.calc(xml, { groups })
+  const r = engine.calc(xml, { groups, autoConfig })
   timings.engineMs = performance.now() - t
   timings.totalMs = performance.now() - t0
   if (r.error) {
@@ -166,6 +166,7 @@ async function calc(code, groups) {
     snapshot: r.snapshot,
     mainSkill: r.mainSkill,
     groups: r.groups,
+    autoConfig: r.autoConfig ?? null,
     ms: Math.round(timings.totalMs),
     cached: false,
     timings: { ...timings, engine: r.timings },
@@ -180,7 +181,7 @@ self.onmessage = async ({ data }) => {
       postMessage({ id, ok: true, info: await init(data.baseUrl) })
     } else if (type === 'calc') {
       if (!info) throw Object.assign(new Error('call init() first'), { kind: 'usage' })
-      postMessage({ id, ok: true, result: await calc(data.code, !!data.groups) })
+      postMessage({ id, ok: true, result: await calc(data.code, !!data.groups, data.autoConfig || false) })
     } else {
       throw Object.assign(new Error(`unknown message ${type}`), { kind: 'usage' })
     }

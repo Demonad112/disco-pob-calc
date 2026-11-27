@@ -42,6 +42,8 @@ r.snapshot.stats.TotalDPS                     // 186706.45241768
 const all = await calc(code, { groups: true })  // + every skill group recalculated (slow)
 ```
 
+**Auto-configuration (opt-in).** Imported builds often have an empty Config tab, so charges, Rage, Combo and enemy ailments are off and DPS is far below what the build does in play. `calc(code, { autoConfig: true })` (or `'suggest'`) calculates the build, reads what PoB itself says the build uses (`mainEnv.conditionsUsed` / `multipliersUsed` / `enemyConditionsUsed`, plus computed charge maxima, Rage, crit and Daze/Shock chance), enables the matching **unset** Config inputs (`lua/autoconfig.lua`), and recalculates. Only inputs with both a source and a consumer in the build are applied (Power Charges, Rage, Combo, Energy Shield, Crit/Non-crit Recently, enemy Dazed/Shocked); inputs the export already sets (on or off) are never touched. Situational toggles (killed a Shocked enemy, Frozen recently, Been Hit, other charges) are only reported, with their isolated DPS/EHP delta in `'suggest'` mode. Result: `autoConfig: { baselineDPS, configuredDPS, baselineEHP, configuredEHP, applied[], suggested[] }`, `null` when off. Rage uses the build's maximum and Combo/Shock effect use fixed assumptions (10 / 20%); each is stated in the entry's `source`. CLI: `build/native/pobcalc lua/cli.lua build.xml --auto-config[=suggest]`. With `groups`, every group row uses the same inferred config (detected on the main skill).
+
 The result has the same shape as `upgraded-disco-companion`'s `services/pob-engine`, so the site can drop it in:
 
 ```

@@ -87,11 +87,12 @@ async function run() {
     return
   }
   const groups = $('groups').checked
+  const autoConfig = $('autocfg').checked ? 'suggest' : false
   calcBtn.disabled = true
   setStatus(groups ? 'Calculating every skill group… this takes a while.' : 'Calculating…')
   const t0 = performance.now()
   try {
-    const r = await calc(code, { groups })
+    const r = await calc(code, { groups, autoConfig })
     const wall = performance.now() - t0
     calcCount++
     const label = calcCount === 1 ? 'First calc' : 'Last calc'
@@ -117,7 +118,20 @@ const SPLIT = [
   ['Chaos', 'ChaosHitAverage', 'var(--chaos)'],
 ]
 
+function renderAutoConfig(a) {
+  $('autocfg-panel').hidden = !a
+  if (!a) return
+  $('autocfg-sum').textContent = a.error
+    ? `failed: ${a.error}`
+    : `${fmtInt(a.baselineDPS)} → ${fmtInt(a.configuredDPS)} DPS`
+  kvTable('autocfg-applied', a.applied.length ? a.applied.map((x) => [`${x.key} = ${x.value}`, x.source]) : [['Nothing to apply', 'No unset toggle has both a source and a consumer in this build.']])
+  const sug = a.suggested.map((x) => [`${x.key}`, `${x.source}${x.dpsDeltaPct != null ? ` · ${x.dpsDeltaPct >= 0 ? '+' : ''}${x.dpsDeltaPct}% DPS` : ''}${x.ehpDelta ? ` · ${x.ehpDelta >= 0 ? '+' : ''}${fmtInt(x.ehpDelta)} EHP` : ''}`])
+  $('autocfg-sug').hidden = !sug.length
+  kvTable('autocfg-suggested', sug)
+}
+
 function render(r) {
+  renderAutoConfig(r.autoConfig)
   const s = r.snapshot.stats ?? {}
   $('results').hidden = false
   $('total-dps').textContent = fmtInt(s.TotalDPS)

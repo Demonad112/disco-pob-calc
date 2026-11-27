@@ -12,6 +12,7 @@
     "extract": "node scripts/extract-affixes.mjs && node scripts/extract-gems.mjs",
     "test:model": "node --test test/build-model.test.mjs",
     "test:edit": "node --test test/build-edit.test.mjs",
+    "test:autoconfig": "node --test test/autoconfig.test.mjs",
     "test:spec": "build/native/pobcalc test/lua/compound_spec.lua",
     "test:parity": "node --test test/parity.test.mjs",
     "test:parity:dist": "PARITY_SOURCE=dist PARITY_GROUPS=0 node --test test/parity.test.mjs",

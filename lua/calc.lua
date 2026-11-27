@@ -7,6 +7,7 @@
 local here = (debug.getinfo(1, "S").source:sub(2)):match("^(.*)[/\\]") or "."
 local pob = dofile(here .. "/headless.lua")
 local groupsLib = dofile(here .. "/groups_lib.lua")
+local autoconfig = dofile(here .. "/autoconfig.lua")
 local now = pobhost.now
 
 local M = { pob = pob }
@@ -50,8 +51,10 @@ local function mainSkillInfo()
 	return pob.object(info)
 end
 
--- One decoded PoB2 export XML -> JSON { snapshot, mainSkill, groups|null, timings } or { error }.
-function M.calc(xml, wantGroups)
+-- One decoded PoB2 export XML -> JSON { snapshot, mainSkill, groups|null, autoConfig|null, timings } or { error }.
+-- opts.autoConfig: false/nil = off (the build exactly as exported), true or "apply" = enable the Config inputs the
+-- build can use (lua/autoconfig.lua), "suggest" = also report each situational toggle's isolated delta.
+function M.calc(xml, wantGroups, opts)
 	if type(xml) ~= "string" or not xml:find("<PathOfBuilding2", 1, true) then
 		return encode({ error = "not a PoB2 export XML" })
 	end
@@ -65,6 +68,24 @@ function M.calc(xml, wantGroups)
 	end
 	local snap, groups, mainSkill
 	local ok, err
+	-- Auto-config runs inside every load, so groups_lib's reload keeps the same Config as the snapshot.
+	local level = opts and opts.autoConfig
+	if level == true then level = "apply" end
+	local autoInfo
+	local plainLoad = pob.load
+	if level then
+		pob.load = function(x)
+			local loadError = plainLoad(x)
+			if loadError then return loadError end
+			local done, res = pcall(autoconfig.run, pob, level)
+			if done then
+				autoInfo = autoInfo or res
+			elseif not autoInfo then
+				autoInfo = { error = pob.strip(tostring(res)), applied = {}, suggested = {} }
+			end
+			return nil
+		end
+	end
 	if wantGroups then
 		local tGroups
 		local done, res = pcall(groupsLib.run, pob, xml, function(loadError)
@@ -90,6 +111,7 @@ function M.calc(xml, wantGroups)
 			timings.snapshot = now() - ts
 		end)
 	end
+	pob.load = plainLoad
 	timings.total = now() - t0 + (timings.restart or 0)
 	collectgarbage("collect")
 	timings.luaHeapBytes = collectgarbage("count") * 1024
@@ -100,6 +122,7 @@ function M.calc(xml, wantGroups)
 		snapshot = snap,
 		mainSkill = mainSkill or require("dkjson").null,
 		groups = groups or require("dkjson").null,
+		autoConfig = autoInfo and pob.object(autoInfo) or require("dkjson").null,
 		timings = pob.object(timings),
 	})
 end
