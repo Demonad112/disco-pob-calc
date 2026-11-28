@@ -12,6 +12,17 @@ local now = pobhost.now
 
 local M = { pob = pob }
 
+-- The Config inputs as the last load left them (before auto-config or overrides touched them), kept while that
+-- build stays loaded so setConfig can start from the export again without decoding and loading it a second time.
+-- nil when nothing is loaded or the build was last used by the all-groups run (which switches skills under it).
+local pristine
+
+local function copyInputs(t)
+	local c = {}
+	for k, v in pairs(t) do c[k] = v end
+	return c
+end
+
 local function encode(t)
 	return pob.encode(pob.object(t), true)
 end
@@ -74,18 +85,20 @@ function M.calc(xml, wantGroups, opts)
 	local autoInfo
 	local overrides = opts and opts.overrides
 	local plainLoad = pob.load
-	if level or overrides then
-		pob.load = function(x)
-			local loadError = plainLoad(x)
-			if loadError then return loadError end
-			local done, res = pcall(autoconfig.run, pob, level, overrides)
+	pristine = nil
+	pob.load = function(x)
+		local loadError = plainLoad(x)
+		if loadError then return loadError end
+		if not wantGroups and build.configTab then pristine = copyInputs(build.configTab.input) end
+		if level or overrides then
+			local done, res = pcall(autoconfig.run, pob, level, overrides, opts)
 			if done then
 				autoInfo = autoInfo or res
 			elseif not autoInfo then
 				autoInfo = { error = pob.strip(tostring(res)), applied = {}, suggested = {} }
 			end
-			return nil
 		end
+		return nil
 	end
 	if wantGroups then
 		local tGroups
@@ -117,6 +130,7 @@ function M.calc(xml, wantGroups, opts)
 	collectgarbage("collect")
 	timings.luaHeapBytes = collectgarbage("count") * 1024
 	if not ok then
+		pristine = nil
 		return encode({ error = pob.strip(tostring(err)), timings = pob.object(timings) })
 	end
 	return encode({
@@ -126,6 +140,60 @@ function M.calc(xml, wantGroups, opts)
 		autoConfig = autoInfo and pob.object(autoInfo) or require("dkjson").null,
 		timings = pob.object(timings),
 	})
+end
+
+-- Change the Config of the build that is already loaded (the last M.calc without groups) and recalculate; no decode,
+-- no load. opts: { autoConfig, overrides, trials, catalog }: as for M.calc, starting again from the export's own inputs.
+-- Same result shape as M.calc minus groups. Returns { error } when no build is loaded (call M.calc first).
+function M.setConfig(opts)
+	opts = opts or {}
+	if not pristine or pob.needsRestart() then
+		return encode({ error = "no build loaded: calculate it first" })
+	end
+	local timings = {}
+	local t0 = now()
+	local level = opts.autoConfig
+	if level == true then level = "apply" end
+	local snap, mainSkill, autoInfo
+	local ok, err = pcall(function()
+		local resetErr = autoconfig.reset(pob, pristine)
+		if resetErr then error(resetErr, 0) end
+		if level or opts.overrides then
+			local done, res = pcall(autoconfig.run, pob, level, opts.overrides, opts)
+			autoInfo = done and res or { error = pob.strip(tostring(res)), applied = {}, suggested = {} }
+		end
+		timings.load = now() - t0
+		local ts = now()
+		snap = pob.snapshot(nil)
+		mainSkill = mainSkillInfo()
+		timings.snapshot = now() - ts
+	end)
+	timings.total = now() - t0
+	if not ok then
+		pristine = nil -- PoB errored mid-way: the build is in an unknown state
+		return encode({ error = pob.strip(tostring(err)), timings = pob.object(timings) })
+	end
+	return encode({
+		snapshot = snap,
+		mainSkill = mainSkill or require("dkjson").null,
+		autoConfig = autoInfo and pob.object(autoInfo) or require("dkjson").null,
+		timings = pob.object(timings),
+	})
+end
+
+-- Measure Config options on the loaded build as it is now (see autoconfig.measure). specs: { { key, values? } ... }.
+-- Returns { measured = { entry... } } or { error }.
+function M.measure(specs)
+	if not pristine or pob.needsRestart() then
+		return encode({ error = "no build loaded: calculate it first" })
+	end
+	local t0 = now()
+	local ok, res = pcall(autoconfig.measure, pob, specs)
+	if not ok then
+		pristine = nil
+		return encode({ error = pob.strip(tostring(res)) })
+	end
+	return encode({ measured = pob.array(res), ms = now() - t0 })
 end
 
 return M

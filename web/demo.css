@@ -70,3 +70,8 @@ footer a, .meta a { color: var(--accent); }
 .badge.export{color:#6a9bd1}.badge.auto{color:#d1a24a}.badge.manual{color:#c279d1}.badge.available{color:#888}
 .pos{color:#4caf7a}.neg{color:#e0605a}
 #catalog select,#catalog input.num{max-width:14rem;width:100%}#catalog input.num{width:5rem}
+.stale{opacity:.5}
+#catalog-more details{margin-top:.6rem}#catalog-more summary{cursor:pointer}
+#catalog .ctl,#catalog-more .ctl{display:inline-flex;gap:.3rem;align-items:center;flex-wrap:wrap}
+#catalog input.num.try,#catalog-more input.num.try{width:4.5rem}
+#catalog-more select,#catalog-more input.num{max-width:14rem}#catalog-more input.num{width:5rem}

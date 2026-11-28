@@ -23,6 +23,15 @@ export function wrapEngine(Module) {
     if (out.charCodeAt(0) === 1) throw new EngineError(out.slice(1))
     return out
   }
+  // Arguments as JSON in a file (no escaping of keys or values into Lua source); the chunk decodes it with dkjson.
+  function requestLua(fn, arg) {
+    Module.FS.writeFile('/tmp/request.json', JSON.stringify(arg))
+    return evalLua(
+      `local f = assert(io.open("/tmp/request.json", "rb")); local req = require("dkjson").decode(f:read("*a")); f:close()
+       os.remove("/tmp/request.json")
+       return CALC.${fn}(req)`,
+    )
+  }
   const luaString = (s) => JSON.stringify(s) // JSON string literals are valid Lua strings for our paths/values
 
   return {
@@ -48,6 +57,19 @@ export function wrapEngine(Module) {
          return CALC.calc(xml, ${groups ? 'true' : 'false'}, { autoConfig = ${auto}, overrides = ${luaOverrides(overrides)} })`,
       )
       return JSON.parse(json)
+    },
+    /** Change the Config of the build the last calc() loaded and recalculate it, without decoding or loading it again.
+     *  Returns calc.lua's setConfig result ({ snapshot, mainSkill, autoConfig, timings } or { error }).
+     *  opts: { autoConfig, overrides, trials, catalog, deltas }. calc() with groups invalidates the loaded build. */
+    setConfig({ autoConfig = false, overrides = null, trials = 0, catalog = true, deltas = false } = {}) {
+      const req = { overrides: overrides ?? {}, trials, catalog, deltas }
+      if (autoConfig) req.autoConfig = autoConfig === 'suggest' ? 'suggest' : 'apply' // JSON null would decode to dkjson.null (truthy in Lua)
+      return JSON.parse(requestLua('setConfig', req))
+    },
+    /** Measure Config options on the loaded build as configured now. specs: [{ key, values?: number[] }].
+     *  Returns { measured: [{ key, effect | options | perUnit/total | trials }], ms } or { error }. */
+    measure(specs) {
+      return JSON.parse(requestLua('measure', specs))
     },
     heapBytes() {
       return Module.HEAPU8.length

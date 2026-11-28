@@ -4,6 +4,8 @@
 //   const info = await init({ onProgress })     // downloads ~3.8 MB once (then Cache Storage), starts PoB (~3 s)
 //   const result = await calc(code)             // a PoB2 code or decoded XML; ~1-2 s per build
 //   const full = await calc(code, { groups: true })   // also recalculates every skill group (much slower)
+//   const next = await setConfig({ overrides: { enemyIsBoss: 'Uber' } })   // same build, new Config, no reload
+//   const { measured } = await measure([{ key: 'enemyLevel', values: [70, 84] }])   // effect of options, on demand
 //
 // result has upgraded-disco-companion services/pob-engine's shape:
 //   { pobVersion, pinCommit, snapshot: { loadError, stats, fullDpsSkills, export: { PlayerStat, MinionStat,
@@ -92,10 +94,16 @@ export function init(opts = {}) {
  * With 'suggest', result.autoConfig.catalog lists every option the build shows, its state (export|auto|manual|available) and its measured effect.
  */
 export function calc(codeOrXml, opts = {}) {
+  return enqueue(() => send({ type: 'calc', code: codeOrXml, groups: !!opts.groups, autoConfig: opts.autoConfig || false, overrides: opts.overrides || null }))
+}
+
+// Run one worker call after the ones before it. skip() is asked when its turn comes; true resolves null.
+function enqueue(job, skip) {
   const run = chain.then(async () => {
+    if (skip?.()) return null
     await init(initOpts ?? {})
     try {
-      return await send({ type: 'calc', code: codeOrXml, groups: !!opts.groups, autoConfig: opts.autoConfig || false, overrides: opts.overrides || null })
+      return await job()
     } catch (e) {
       if (e.kind === 'fatal') reset() // the next call boots a fresh engine
       throw e
@@ -103,6 +111,29 @@ export function calc(codeOrXml, opts = {}) {
   })
   chain = run.catch(() => {})
   return run
+}
+
+/**
+ * Change the Config of the build the last calc() loaded (not with groups) and recalculate it. The worker keeps the build
+ * loaded, so this skips decoding and loading it: ~0.5-1 s instead of calc()'s load plus the catalog's trials.
+ * Starts again from the export's own Config, then applies `overrides` and auto-config like calc() does.
+ * @param {{ autoConfig?: boolean | 'apply' | 'suggest', overrides?: Record<string, boolean | number | string>, trials?: number, catalog?: boolean, deltas?: boolean }} [opts]
+ * trials: how many options the catalog measures in this call (default 0: listed, measured by measure()); catalog:
+ * false skips the catalog; deltas: also measure each situational toggle (default false).
+ * Rejects with kind 'engine' ("no build loaded") when calc() has not loaded one.
+ */
+export function setConfig(opts = {}) {
+  return enqueue(() => send({ type: 'setConfig', autoConfig: opts.autoConfig || false, overrides: opts.overrides || null, trials: opts.trials ?? 0, catalog: opts.catalog ?? true, deltas: !!opts.deltas }), opts.skip)
+}
+
+/**
+ * Measure Config options of the loaded build as configured now: one change at a time, nothing is kept.
+ * @param {{ key: string, values?: number[] }[]} specs values (counts only): try these instead of +1 / vs 0.
+ * @param {{ skip?: () => boolean }} [opts] skip: checked when the call's turn comes; true resolves null without running (stale request).
+ * @returns {Promise<{ measured: object[], ms: number } | null>}
+ */
+export function measure(specs, opts = {}) {
+  return enqueue(() => send({ type: 'measure', specs }), opts.skip)
 }
 
 /** Stop the engine and free its memory. The next init()/calc() starts again (from the cache). */

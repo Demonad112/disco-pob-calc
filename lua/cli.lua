@@ -9,7 +9,7 @@ if arg then
 	file = file or arg[1]
 	for i = 2, #arg do flags[arg[i]] = true end
 end
-assert(file, "usage: pobcalc lua/cli.lua <code-or-xml-file> [--groups] [--auto-config[=suggest]]")
+assert(file, "usage: pobcalc lua/cli.lua <code-or-xml-file> [--groups] [--auto-config[=suggest]] [--set=key=value]... [--then=key=value]... [--measure=key[:v1,v2]]...")
 local f = assert(io.open(file, "rb"))
 local text = f:read("*a")
 f:close()
@@ -31,3 +31,21 @@ for _, a in ipairs(arg or {}) do
 end
 local auto = flags["--auto-config=suggest"] and "suggest" or (flags["--auto-config"] and "apply") or nil
 io.stdout:write(calc.calc(text, flags["--groups"] == true, { autoConfig = auto, overrides = overrides }), "\n")
+-- --then=key=value: calc.setConfig on the loaded build with these overrides (one more JSON line).
+local after, measures
+for _, a in ipairs(arg or {}) do
+	local k, v = a:match("^%-%-then=([%w_]+)=(.*)$")
+	if k then
+		after = after or {}
+		if v == "true" then after[k] = true elseif v == "false" then after[k] = false else after[k] = tonumber(v) or v end
+	end
+	local mk, mv = a:match("^%-%-measure=([%w_]+):?(.*)$")
+	if mk then
+		local values
+		if mv ~= "" then values = {}; for n in mv:gmatch("[^,]+") do values[#values + 1] = tonumber(n) end end
+		measures = measures or {}
+		measures[#measures + 1] = { key = mk, values = values }
+	end
+end
+if after then io.stdout:write(calc.setConfig({ autoConfig = auto, overrides = after, catalog = false, trials = 0 }), "\n") end
+if measures then io.stdout:write(calc.measure(measures), "\n") end

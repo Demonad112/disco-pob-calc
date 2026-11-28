@@ -48,6 +48,31 @@ test('demo page calculates the reference code in Chromium', { timeout: 600_000 }
       assert.deepEqual(compareToOracle(first.result, oracle, null), [])
     })
 
+    await t.test('Config table: the boss dropdown changes DPS without reloading the build, and back again', async () => {
+      await page.evaluate(() => (window.__pobLast = null))
+      await page.check('#autocfg')
+      await page.click('#calc')
+      await page.waitForFunction(() => window.__pobLast?.result.autoConfig?.catalog, null, { timeout: 300_000 })
+      assert.ok((await page.locator('#catalog tbody tr').count()) > 0, 'Config table renders')
+      const base = await page.textContent('#total-dps')
+      const boss = page.locator('#catalog select', { has: page.locator('option', { hasText: 'Standard Boss' }) }).first()
+      const original = await boss.inputValue()
+      const other = original === 'Boss' ? 'None' : 'Boss'
+      await page.evaluate(() => (window.__pobLast = null))
+      await boss.selectOption(other)
+      await page.waitForFunction(() => window.__pobLast, null, { timeout: 300_000 })
+      assert.equal(await page.evaluate(() => window.__pobLast.kind), 'reconfig', 'no reload of the build')
+      const changed = await page.textContent('#total-dps')
+      assert.notEqual(changed, base)
+      await page.waitForFunction(() => window.__pobPending === 0, null, { timeout: 300_000 })
+      await page.evaluate(() => (window.__pobLast = null))
+      await boss.selectOption(original)
+      await page.waitForFunction(() => window.__pobLast, null, { timeout: 300_000 })
+      assert.equal(await page.textContent('#total-dps'), base, 'back to the starting DPS')
+      await page.waitForFunction(() => window.__pobPending === 0, null, { timeout: 300_000 })
+      await page.uncheck('#autocfg')
+    })
+
     // Repeat calc in the same engine.
     await page.evaluate(() => (window.__pobLast = null))
     await page.click('#calc')
