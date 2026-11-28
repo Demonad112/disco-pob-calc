@@ -154,10 +154,160 @@ local function round(v)
 	return v and math.floor(v * 100 + 0.5) / 100 or nil
 end
 
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- Catalog: every Config option PoB would show for this build (control.shown(), plus anything the export set), each
+-- with its measured effect. check: state off vs on. list: every alternative vs the selected one. count: +1 vs now
+-- (per extra unit) and, when set, now vs 0. Effects are isolated (one change at a time on the configured build), so
+-- they are inferred from PoB's own recalculation, not read from a tooltip.
+local STATS = { "TotalDPS", "CombinedDPS", "TotalEHP", "PhysicalMaximumHitTaken", "FireMaximumHitTaken", "EvadeChance", "EffectiveBlockChance", "PhysicalDamageReduction" }
+local MAX_TRIALS = 60 -- each trial is a full PoB recalculation (~1 s native, more in WASM); unmeasured options are still listed
+
+local function snap()
+	local t = {}
+	for _, k in ipairs(STATS) do t[k] = out(k) end
+	return t
+end
+
+local function diff(pob, base, now)
+	local d = {}
+	for _, k in ipairs(STATS) do
+		local a, b = base[k], now[k]
+		if a and b and math.abs(b - a) > 1e-9 * math.max(1, math.abs(a)) then
+			d[k] = { from = round(a), to = round(b), pct = a ~= 0 and round((b / a - 1) * 100) or nil }
+		end
+	end
+	return pob.object(d)
+end
+
+local function clean(s)
+	return (tostring(s or ""):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", ""))
+end
+
+-- Set one input, recalculate, read the stats, restore. Returns stats or nil on a PoB error.
+local function trial(pob, key, value, budget)
+	local input = build.configTab.input
+	local old = input[key]
+	input[key] = value
+	budget.n = budget.n + 1
+	local err = recalc(pob)
+	local s = (not err) and snap() or nil
+	input[key] = old
+	return s
+end
+
+local TYPES = { check = true, count = true, countAllowZero = true, integer = true, float = true, list = true }
+
+-- applied: set of keys auto-config enabled. overrides: set of keys the caller set.
+function M.catalog(pob, applied, overrides, exported)
+	local ct = build.configTab
+	local input = ct.input
+	local entries = {}
+	local budget = { n = 0 }
+	local ok, varList = pcall(LoadModule, "Modules/ConfigOptions")
+	if not ok or type(varList) ~= "table" then return entries end
+	local base = snap()
+	local unmeasured = 0
+	local sectionName
+	local showAll = ct.toggleConfigs
+	ct.toggleConfigs = false -- only options PoB would show for this build, not the 'show all' view
+	local cands = {}
+	for _, v in ipairs(varList) do
+		if v.section then sectionName = clean(v.section) end
+		local key = v.var
+		local ctl = key and ct.varControls[key]
+		if key and ctl and TYPES[v.type] then
+			local cur = input[key]
+			local def = ct:GetDefaultState(key, type(cur))
+			local sok, sres = pcall(function() return type(ctl.shown) == "function" and ctl.shown() or ctl.shown end)
+			local isSet = cur ~= nil and cur ~= def
+			if (sok and sres) or isSet then
+				local value = cur
+				if value == nil then value = def end
+				local e = {
+					key = key, label = clean(v.label or key), section = sectionName,
+					type = v.type == "list" and "list" or (v.type == "check" and "check" or "count"),
+					value = value, default = def,
+					state = overrides[key] and "manual" or applied[key] and "auto" or exported[key] and "export" or "available",
+				}
+				if v.tooltip then e.tooltip = clean(v.tooltip) end
+				cands[#cands + 1] = { e = e, v = v, cur = cur }
+			end
+		end
+	end
+	ct.toggleConfigs = showAll
+	-- Measure what the build already uses first, then toggles, lists, counts, until the trial budget is spent.
+	local rank = { manual = 0, auto = 0, export = 0, available = 1 }
+	local trank = { check = 0, list = 1, count = 2 }
+	table.sort(cands, function(a, b)
+		local ra, rb = rank[a.e.state] * 3 + trank[a.e.type], rank[b.e.state] * 3 + trank[b.e.type]
+		if ra ~= rb then return ra < rb end
+		return a.e.key < b.e.key
+	end)
+	for _, c in ipairs(cands) do
+		local e, v, cur, key = c.e, c.v, c.cur, c.e.key
+		if e.section == "Quest Rewards" then
+			e.measured = false -- one-off rewards, no per-build effect worth a recalculation
+		elseif budget.n >= MAX_TRIALS then
+			e.measured = false
+			unmeasured = unmeasured + 1
+		elseif v.type == "check" then
+			local on = cur == true
+			local s = trial(pob, key, not on, budget)
+			if s then e.effect = on and diff(pob, s, base) or diff(pob, base, s) end
+		elseif v.type == "list" then
+			e.options = {}
+			for _, o in ipairs(v.list or {}) do
+				local o_ = { val = o.val, label = clean(o.label), selected = o.val == e.value }
+				if not o_.selected and budget.n < MAX_TRIALS then
+					local s = trial(pob, key, o.val, budget)
+					if s then o_.vsSelected = diff(pob, base, s) end
+				end
+				e.options[#e.options + 1] = o_
+			end
+		else
+			local n = tonumber(cur) or 0
+			local s = trial(pob, key, n + 1, budget)
+			if s then e.perUnit = diff(pob, base, s) end
+			if n > 0 and budget.n < MAX_TRIALS then
+				local s0 = trial(pob, key, 0, budget)
+				if s0 then e.total = diff(pob, s0, base) end
+			end
+		end
+		local has = e.effect or e.perUnit or e.total
+		local hasOpt = false
+		for _, o in ipairs(e.options or {}) do if o.vsSelected and next(o.vsSelected) then hasOpt = true end end
+		-- Hide unset options that measurably change nothing; keep anything set and anything not measured.
+		if e.measured ~= false and (has and next(has)) or hasOpt or e.state ~= "available" then
+			entries[#entries + 1] = e
+		end
+	end
+	recalc(pob) -- leave the build as configured
+	return entries, unmeasured
+end
+
 -- Apply Tier 1 and recalculate. level: "apply" (default) or "suggest" (also compute each Tier 2 delta).
 -- Returns a plain table (use pob.object on the way out): { baselineDPS, configuredDPS, applied, suggested, error }.
-function M.run(pob, level)
-	local det = M.detect()
+function M.run(pob, level, overrides)
+	overrides = overrides or {}
+	local ct = build.configTab
+	local exported = {}
+	for k, v in pairs(ct.input) do
+		if v ~= ct:GetDefaultState(k, type(v)) then exported[k] = true end
+	end
+	local manual = {}
+	for k, v in pairs(overrides) do
+		if v ~= nil and not (type(v) == "table") then ct.input[k] = v; manual[k] = true end
+	end
+	if next(manual) then
+		local err = recalc(pob)
+		if err then
+			for k in pairs(manual) do ct.input[k] = nil end
+			recalc(pob)
+			manual = {}
+		end
+	end
+	local det = level and M.detect() or { apply = {}, suggest = {} }
 	local result = {
 		baselineDPS = out("TotalDPS"), configuredDPS = out("TotalDPS"),
 		baselineEHP = out("TotalEHP"), configuredEHP = out("TotalEHP"),
@@ -200,6 +350,12 @@ function M.run(pob, level)
 		end
 	end
 	if level == "suggest" and #det.suggest > 0 then recalc(pob) end -- leave the build as configured by Tier 1
+	if level == "suggest" then
+		local applied = {}
+		for _, a in ipairs(result.applied) do applied[a.key] = true end
+		local ok, cat, unmeasured = pcall(M.catalog, pob, applied, manual, exported)
+		if ok then result.catalog = cat; result.unmeasured = unmeasured else result.catalogError = pob.strip(tostring(cat)); recalc(pob) end
+	end
 	return result
 end
 

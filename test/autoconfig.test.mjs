@@ -96,3 +96,19 @@ test('idempotent: a build already configured by autoconfig changes nothing', { s
   assert.equal(second.autoConfig.applied.length, 0)
   assert.equal(second.snapshot.stats.TotalDPS, first.snapshot.stats.TotalDPS)
 })
+
+test('overrides win over auto-config; catalog reports state and measured effect', { skip, timeout: 600_000 }, () => {
+  const f = join(dir, `b${n++}.xml`)
+  writeFileSync(f, bareXml)
+  const out = execFileSync(native, ['lua/cli.lua', f, '--auto-config=suggest', '--set=usePowerCharges=false', '--set=enemyIsBoss=Boss'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] })
+  const a = JSON.parse(out.trim().split('\n').pop()).autoConfig
+  assert.ok(!a.applied.some((x) => x.key === 'usePowerCharges'), 'a manual off must not be re-applied')
+  const byKey = Object.fromEntries(a.catalog.map((e) => [e.key, e]))
+  assert.equal(byKey.usePowerCharges.state, 'manual')
+  assert.equal(byKey.usePowerCharges.value, false)
+  assert.ok(byKey.usePowerCharges.effect.TotalDPS.pct > 0, 'turning power charges on adds damage')
+  const boss = byKey.enemyIsBoss
+  assert.equal(boss.value, 'Boss')
+  const uber = boss.options.find((o) => o.val === 'Uber')
+  assert.ok(uber.vsSelected.TotalDPS.pct < 0, 'uber pinnacle is worse than a standard boss')
+})

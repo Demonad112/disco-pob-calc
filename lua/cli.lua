@@ -21,5 +21,13 @@ if not text:find("^%s*<") then
 	local raw = require("base64").decode((compact:gsub("-", "+"):gsub("_", "/")))
 	text = assert(pobhost.inflate(raw))
 end
+local overrides
+for _, a in ipairs(arg or {}) do
+	local k, v = a:match("^%-%-set=([%w_]+)=(.*)$")
+	if k then
+		overrides = overrides or {}
+		if v == "true" then overrides[k] = true elseif v == "false" then overrides[k] = false else overrides[k] = tonumber(v) or v end
+	end
+end
 local auto = flags["--auto-config=suggest"] and "suggest" or (flags["--auto-config"] and "apply") or nil
-io.stdout:write(calc.calc(text, flags["--groups"] == true, { autoConfig = auto }), "\n")
+io.stdout:write(calc.calc(text, flags["--groups"] == true, { autoConfig = auto, overrides = overrides }), "\n")

@@ -139,7 +139,7 @@ async function init(base) {
   return info
 }
 
-async function calc(code, groups, autoConfig) {
+async function calc(code, groups, autoConfig, overrides) {
   const t0 = performance.now()
   const timings = {}
   let t = performance.now()
@@ -152,7 +152,7 @@ async function calc(code, groups, autoConfig) {
   timings.treeMs = performance.now() - t
 
   t = performance.now()
-  const r = engine.calc(xml, { groups, autoConfig })
+  const r = engine.calc(xml, { groups, autoConfig, overrides })
   timings.engineMs = performance.now() - t
   timings.totalMs = performance.now() - t0
   if (r.error) {
@@ -181,7 +181,7 @@ self.onmessage = async ({ data }) => {
       postMessage({ id, ok: true, info: await init(data.baseUrl) })
     } else if (type === 'calc') {
       if (!info) throw Object.assign(new Error('call init() first'), { kind: 'usage' })
-      postMessage({ id, ok: true, result: await calc(data.code, !!data.groups, data.autoConfig || false) })
+      postMessage({ id, ok: true, result: await calc(data.code, !!data.groups, data.autoConfig || false, data.overrides || null) })
     } else {
       throw Object.assign(new Error(`unknown message ${type}`), { kind: 'usage' })
     }

@@ -65,3 +65,8 @@ summary { cursor: pointer; font-weight: 600; }
 footer { color: var(--muted); font-size: 12px; margin-top: 24px; }
 footer a, .meta a { color: var(--accent); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.badge{display:inline-block;font-size:.7rem;padding:0 .4em;border-radius:.6em;border:1px solid currentColor;opacity:.85}
+.badge.export{color:#6a9bd1}.badge.auto{color:#d1a24a}.badge.manual{color:#c279d1}.badge.available{color:#888}
+.pos{color:#4caf7a}.neg{color:#e0605a}
+#catalog select,#catalog input.num{max-width:14rem;width:100%}#catalog input.num{width:5rem}
