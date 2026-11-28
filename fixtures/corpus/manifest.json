@@ -211,6 +211,20 @@
     ]
   },
   {
+    "id": "defensive-consumers",
+    "synthetic": true,
+    "archetypes": [
+      "defensive",
+      "attack"
+    ],
+    "note": "attack fixture + belt lines conditional on being hit, Low Life, Low Energy Shield and being Stunned recently: defensive consumers with no reservation or mechanic that keeps you on Low Life / Low ES / Stunned",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 72342.86836864,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
     "id": "life-armour",
     "synthetic": true,
     "archetypes": [

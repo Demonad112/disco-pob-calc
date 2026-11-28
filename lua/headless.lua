@@ -191,12 +191,43 @@ local function parsed(s)
 	return s
 end
 
+-- Hidden granted effects (Staggering Palm's "Projectile", Charged Staff's "Charged Shockwave") reach Full DPS under
+-- their bare name. name -> the visible active skill of the socket group that grants it, from the Full DPS skills of the
+-- main env; a name that two groups grant with different parents is left bare (the rows carry no skill reference).
+local function hiddenParents()
+	local env = build and build.calcsTab and build.calcsTab.mainEnv
+	local map, clash = {}, {}
+	for _, s in ipairs(env and env.player and env.player.activeSkillList or {}) do
+		local ge = s.activeEffect and s.activeEffect.grantedEffect
+		local sg = s.socketGroup
+		if ge and ge.hidden and sg then
+			local parent
+			for _, d in ipairs(sg.displaySkillList or {}) do
+				local dge = d.activeEffect and d.activeEffect.grantedEffect
+				if dge and not dge.hidden then parent = dge.name break end
+			end
+			if parent then
+				if map[ge.name] and map[ge.name] ~= parent then clash[ge.name] = true end
+				map[ge.name] = parent
+			end
+		end
+	end
+	for k in pairs(clash) do map[k] = nil end
+	return map
+end
+
+-- name stays PoB's own (what export.FullDPSSkill and anything keyed on it use); label is for display:
+-- "<parent skill> › <name>" for a hidden granted effect, else the name.
 local function fullDpsRows(skillDps)
 	local rows = array()
+	local parents = hiddenParents()
 	for _, s in ipairs(skillDps or {}) do
 		local count = s.count or 1
+		local parent = s.name and parents[s.name]
 		rows[#rows + 1] = {
 			name = s.name,
+			label = parent and (parent .. " › " .. s.name) or s.name,
+			parent = parent,
 			count = count,
 			dps = scalar(s.dps),
 			value = scalar(s.dps * count),

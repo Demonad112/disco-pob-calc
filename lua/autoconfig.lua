@@ -16,6 +16,10 @@
 -- In "suggest" mode candidates also come from PoB's own Config definitions: every check option PoB shows because a modifier in the
 -- build is conditional on it (ifCond / ifEnemyCond / ifMinionCond / ifMult / ifFlag gates) is at least suggested,
 -- so the detection covers every class, ascendancy and minion build without a per-class list.
+-- Defensive state (being hit, Fortify / Guard / Barrier, having ES, Low Life / Low ES / Stunned) is judged on TotalEHP
+-- (entries carry judge = "TotalEHP"): a candidate needs a consumer in conditionsUsed and a source in the build. Low
+-- Life / Low ES / Stunned Recently are never applied and only suggested when a mechanic keeps you there and a measured
+-- TotalEHP or DPS gain shows up.
 -- An input the export already carries (input[k] ~= nil, true or false) is never touched.
 local M = {}
 
@@ -26,6 +30,10 @@ local DAZE_DURATION = 8 -- s (ConfigOptions.lua conditionEnemyDazed tooltip)
 local DEFAULT_AILMENT_DURATION = 4
 local INERT_PCT = 0.01 -- % change below which an applied input counts as doing nothing
 local MEASURE_STATS = { "TotalDPS", "FullDPS", "TotalEHP" }
+
+local function clean(s)
+	return (tostring(s or ""):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", ""))
+end
 
 local function envOf()
 	return build.calcsTab and build.calcsTab.mainEnv
@@ -164,7 +172,121 @@ local function out(k)
 	return type(v) == "number" and v == v and v or nil
 end
 
--- Rules. Returns a list of { key, value, source, tier } (tier 1 = apply, 2 = report).
+local function configVars()
+	local ok, varList = pcall(LoadModule, "Modules/ConfigOptions")
+	return ok and type(varList) == "table" and varList or nil
+end
+
+local function condsOf(v)
+	local c = v.ifCond
+	if type(c) == "string" then return { c } end
+	return type(c) == "table" and c or {}
+end
+
+-- A permanent source of a defensive buff (Fortify / Guard / Barrier): a "you have X" / "you are X" line on a passive,
+-- item or skill, or a persistent / aura skill whose description grants it. Returns a reason or nil.
+local function permanentSource(env, word)
+	local r = scanLines(env, function(line, where)
+		local l = tostring(line or ""):lower()
+		if l:find("^you have [%w%s]*" .. word) or l:find("^you are " .. word) then return where .. ": " .. line end
+	end)
+	if r then return r end
+	for _, s in ipairs(env.player.activeSkillList or {}) do
+		local ge = s.activeEffect and s.activeEffect.grantedEffect
+		local types = ge and ge.skillTypes or {}
+		if (types[SkillType.Persistent] or types[SkillType.Aura]) and tostring(ge.description or ""):lower():find(word, 1, true) then
+			return "Persistent skill " .. tostring(ge.name)
+		end
+	end
+	return nil
+end
+
+-- Any source of it, permanent or not (a skill or modifier that gains / grants it).
+local function anySource(env, word)
+	return scanLines(env, function(line, where)
+		local l = tostring(line or ""):lower()
+		if l:find(word, 1, true) and (l:find("gain") or l:find("grant")) then return where .. ": " .. line end
+	end)
+end
+
+-- Defensive state is judged on TotalEHP. Families by the option's ifCond (PoB's Config option definitions).
+local HIT_TAKEN = { "^BeenHit", "^BeenCrit", "^BeenSavageHit", "^HitBy", "^Taken.*Recently$" }
+local DEF_BUFFS = { { "Fortif", "fortif" }, { "Guard", "guard" }, { "Barrier", "barrier" } }
+-- States you are only in when a mechanic keeps you there: never Tier 1, and suggested only when a measured
+-- TotalEHP or DPS gain shows up (M.run measures them even without "suggest").
+local GUARDED = { conditionLowLife = true, conditionLowEnergyShield = true, conditionStunnedRecently = true }
+
+-- The reservation or mechanic that keeps you in a GUARDED state, or nil.
+local function keepsYouThere(env, output, key)
+	local modDB = env.player.modDB
+	if key == "conditionLowLife" then
+		if (output.LifeReservedPercent or 0) > 0 then return string.format("%.0f%% of Life reserved", output.LifeReservedPercent) end
+		if modDB:Sum("BASE", nil, "LowLifePercentage") > 0 then return "Low Life threshold raised" end
+		return nil
+	elseif key == "conditionLowEnergyShield" then
+		if modDB:Sum("BASE", nil, "LowEnergyShieldPercentage") > 0 then return "Low Energy Shield threshold raised" end
+		return scanLines(env, function(line, where)
+			local l = tostring(line or ""):lower()
+			if l:find("energy shield", 1, true) and l:find("reserv", 1, true) then return where .. ": " .. line end
+		end)
+	elseif key == "conditionStunnedRecently" then
+		-- Something in the build stuns you yourself; enemy stuns alone don't keep you there.
+		if modDB:Flag(nil, "StunImmune") then return nil end
+		return scanLines(env, function(line, where)
+			local l = tostring(line or ""):lower()
+			if l:find("stun yourself") or l:find("^you are h?e?a?v?y? ?stunned") or l:find("you become stunned") then return where .. ": " .. line end
+		end)
+	end
+end
+
+-- Defensive candidates from PoB's own Config options: only where conditionsUsed shows a consumer (ifCond) and the
+-- build has a source. claimed: every key looked at here, so the generic pass can't re-add one without a source.
+local function defensive(env, output, add, claimed)
+	local cu = env.conditionsUsed
+	local varList = configVars()
+	if not varList then return end
+	local function family(cond, list, idx)
+		for _, p in ipairs(list) do
+			local pat = idx and p[idx] or p
+			if cond:find(pat) and not cond:find("^Lost") then return p end
+		end
+	end
+	for _, v in ipairs(varList) do
+		local key = v.var
+		if key and v.type == "check" then
+			for _, cond in ipairs(condsOf(v)) do
+				local hit, buff = family(cond, HIT_TAKEN), family(cond, DEF_BUFFS, 1)
+				-- Claimed whether or not anything uses it: PoB also shows an option whose implyCond is used (Savage Hit
+				-- implies Been Hit), which is not a consumer of the option's own condition.
+				if GUARDED[key] or hit or buff then claimed[key] = true end
+				if used(cu, cond) then
+					local label = clean(v.label or key)
+					if GUARDED[key] then
+						local why = keepsYouThere(env, output, key)
+						if why then add(2, key, true, why .. "; " .. label, { judge = "TotalEHP", requireGain = true }) end
+					else
+						if hit then
+							add(2, key, true, "Modifiers need it (" .. label .. "); the enemy hits you, but not always", { judge = "TotalEHP" })
+						end
+						-- Skipped when PoB already has it (a source it models itself).
+						if buff and not env.player.modDB:Flag(nil, "Condition:" .. cond) then
+							local perm = permanentSource(env, buff[2])
+							if perm then add(1, key, true, perm .. "; modifiers need it (" .. label .. ")", { judge = "TotalEHP" })
+							else
+								local src = anySource(env, buff[2])
+								if src then add(2, key, true, "Not permanent: " .. src .. " (" .. label .. ")", { judge = "TotalEHP" }) end
+							end
+						end
+					end
+					break
+				end
+			end
+		end
+	end
+end
+
+-- Rules. Returns a list of { key, value, source, tier, judge?, requireGain? } (tier 1 = apply, 2 = report) and the
+-- set of keys the defensive pass claimed.
 local function rules(env, output)
 	local skillModList, mainSkill = statsOf(env)
 	local skillCfg = mainSkill and mainSkill.skillCfg -- weapon/skill-flag conditioned chances only count under the skill's cfg
@@ -172,9 +294,12 @@ local function rules(env, output)
 	local cu, eu = env.conditionsUsed, env.enemyConditionsUsed
 	local speed = output.Speed or 0
 	local res = {}
-	local function add(tier, key, value, source)
-		res[#res + 1] = { key = key, value = value, source = source, tier = tier }
+	local function add(tier, key, value, source, extra)
+		local r = { key = key, value = value, source = source, tier = tier }
+		for k, x in pairs(extra or {}) do r[k] = x end
+		res[#res + 1] = r
 	end
+	local claimed = {}
 	local function byUptime(key, uptime, source)
 		add(uptime >= MIN_UPTIME and 1 or 2, key, true, string.format("%s; uptime %.0f%%", source, uptime * 100))
 	end
@@ -223,7 +348,8 @@ local function rules(env, output)
 	end
 
 	if used(cu, "HaveEnergyShield") and (output.EnergyShield or 0) > 0 then
-		add(1, "conditionHaveEnergyShield", true, "Energy Shield " .. math.floor(output.EnergyShield) .. " and modifiers conditional on it")
+		-- "While you have Energy Shield": permanent when the build has any (you have X); judged on TotalEHP.
+		add(1, "conditionHaveEnergyShield", true, "Energy Shield " .. math.floor(output.EnergyShield) .. " and modifiers conditional on it", { judge = "TotalEHP" })
 	end
 
 	-- Recent crits / non-crits: at least one in the last 4 s of the main skill's hits.
@@ -302,8 +428,10 @@ local function rules(env, output)
 		if rcond and used(cu, rcond) and buildup > 0 then add(t <= RECENT and 1 or 2, rkey, true, src) end
 	end
 
+	-- Defensive state (being hit, Fortify / Guard / Barrier, Low Life / Low ES / Stunned): judged on TotalEHP.
+	defensive(env, output, add, claimed)
+
 	-- Situational, always Tier 2.
-	if used(cu, "BeenHitRecently") then add(2, "conditionBeenHitRecently", true, "Modifiers conditional on being hit recently") end
 	if used(cu, "CritInPast8Sec") then add(2, "conditionCritInPast8Sec", true, "Modifiers conditional on a crit in the past 8s") end
 	if used(cu, "KilledRecently") then add(2, "conditionKilledRecently", true, "Needs kills (none on a single boss)") end
 	if used(cu, "KilledShockedLast3Seconds") then add(2, "conditionKilledShockedLast3Seconds", true, "Needs a Shocked kill every 3s (adds)") end
@@ -311,7 +439,7 @@ local function rules(env, output)
 	if used(cu, "Onslaught") and not env.player.modDB:Flag(nil, "Onslaught") then
 		add(2, "buffOnslaught", true, "Modifiers need Onslaught; the toggle also adds the buff itself")
 	end
-	return res
+	return res, claimed
 end
 
 -- Never applied or suggested by the generic pass: an assumed Shock effect is either inert or above what the build
@@ -331,7 +459,7 @@ local function discovered(seen)
 	for _, v in ipairs(varList) do
 		local key = v.var
 		local ctl = key and ct.varControls[key]
-		if key and ctl and v.type == "check" and not seen[key] and not NEVER[key] then
+		if key and ctl and v.type == "check" and not seen[key] and not NEVER[key] and not GUARDED[key] then
 			local gated = false
 			for _, g in ipairs(GATES) do if v[g] then gated = true break end end
 			if gated then
@@ -358,8 +486,9 @@ function M.detect(generic)
 	local input = build.configTab.input
 	local res = { apply = {}, suggest = {} }
 	local seen = {}
-	local all = rules(env, output)
+	local all, claimed = rules(env, output)
 	for _, r in ipairs(all) do seen[r.key] = true end
+	for k in pairs(claimed) do seen[k] = true end
 	if generic then for _, r in ipairs(discovered(seen)) do all[#all + 1] = r end end
 	for _, r in ipairs(all) do
 		if input[r.key] == nil then
@@ -403,10 +532,6 @@ local function diff(pob, base, now)
 		end
 	end
 	return pob.object(d)
-end
-
-local function clean(s)
-	return (tostring(s or ""):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", ""))
 end
 
 -- Set one input, recalculate, read the stats, restore. Returns stats, or nil and PoB's error.
@@ -517,7 +642,13 @@ function M.catalog(pob, applied, overrides, exported, trials)
 					state = overrides[key] and "manual" or applied[key] and "auto" or exported[key] and "export" or "available",
 					measured = false,
 				}
-				if v.tooltip then e.tooltip = clean(v.tooltip) end
+				-- A tooltip can be a function of (modList, build) (LowLifeTooltip / FullLifeTooltip): use its string.
+				local tip = v.tooltip
+				if type(tip) == "function" then
+					local tok, ts = pcall(tip, ct.modList, build)
+					tip = tok and type(ts) == "string" and ts or nil
+				end
+				if type(tip) == "string" then e.tooltip = clean(tip) end
 				if v.type == "list" then e.options = optionsOf(v, value) end
 				cands[#cands + 1] = { e = e, v = v }
 			end
@@ -641,7 +772,7 @@ function M.run(pob, level, overrides, opts)
 		for _, r in ipairs(det.apply) do
 			input[r.key] = nil
 			local e = recalc(pob)
-			local entry = { key = r.key, value = r.value, source = r.source, tier = 1 }
+			local entry = { key = r.key, value = r.value, source = r.source, tier = 1, judge = r.judge }
 			local moved = e ~= nil -- a failed trial is kept (not proof of "no change") and shown
 			if e then entry.error = e else
 				entry.contribution = {}
@@ -665,27 +796,34 @@ function M.run(pob, level, overrides, opts)
 		result.applied = kept
 	end
 	local baseDPS, baseEHP = result.configuredDPS, result.configuredEHP
+	local ranTrial = false
 	for _, r in ipairs(det.suggest) do
-		local s = { key = r.key, value = r.value, source = r.source, tier = 2 }
-		if wantDeltas and baseDPS then
+		local s = { key = r.key, value = r.value, source = r.source, tier = 2, judge = r.judge }
+		-- A GUARDED state (Low Life / Low ES / Stunned) is measured even without "suggest": it is only reported on a gain.
+		local d
+		if (wantDeltas or r.requireGain) and baseDPS then
 			input[r.key] = r.value
+			ranTrial = true
 			if not recalc(pob) then
 				local dps, ehp = out("TotalDPS"), out("TotalEHP")
-				s.dpsDelta = dps and round(dps - baseDPS)
-				s.dpsDeltaPct = (dps and baseDPS ~= 0) and round((dps / baseDPS - 1) * 100) or nil
-				s.ehpDelta = (ehp and baseEHP) and round(ehp - baseEHP) or nil
+				d = {
+					dpsDelta = dps and round(dps - baseDPS),
+					dpsDeltaPct = (dps and baseDPS ~= 0) and round((dps / baseDPS - 1) * 100) or nil,
+					ehpDelta = (ehp and baseEHP) and round(ehp - baseEHP) or nil,
+					ehpDeltaPct = (ehp and baseEHP and baseEHP ~= 0) and round((ehp / baseEHP - 1) * 100) or nil,
+				}
 			end
 			input[r.key] = nil
 		end
-		-- With deltas, a toggle that changes neither DPS nor EHP is noise.
+		if wantDeltas and d then for k, x in pairs(d) do s[k] = x end end
 		-- With deltas, a toggle that changes neither DPS nor EHP is noise, and one that only lowers them is a debuff on
-		-- you (Are you Frozen? / on Low Life?), not a state worth enabling.
-		local measured = wantDeltas and s.dpsDelta ~= nil
-		if not measured or s.dpsDelta > 0 or (s.ehpDelta or 0) > 0 then
-			result.suggested[#result.suggested + 1] = s
-		end
+		-- you (Are you Frozen? / on Low Life?), not a state worth enabling. A GUARDED one needs a measured gain always.
+		local gain = d ~= nil and d.dpsDelta ~= nil and (d.dpsDelta > 0 or (d.ehpDelta or 0) > 0)
+		local keep = true
+		if r.requireGain or (wantDeltas and d and d.dpsDelta ~= nil) then keep = gain end
+		if keep then result.suggested[#result.suggested + 1] = s end
 	end
-	if wantDeltas and #det.suggest > 0 then recalc(pob) end -- leave the build as configured by Tier 1
+	if ranTrial then recalc(pob) end -- leave the build as configured by Tier 1
 	if wantCatalog then
 		local applied = {}
 		for _, a in ipairs(result.applied) do applied[a.key] = true end

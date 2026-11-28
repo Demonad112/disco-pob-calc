@@ -192,3 +192,48 @@ test('charges: a consumer without a generator is only suggested', { skip, timeou
   assert.ok(s, 'reported as situational')
   assert.match(s.source, /nothing found that generates them/)
 })
+
+// An extra mod line on the Mageblood belt (as scripts/make-corpus.mjs beltLine does).
+const beltLine = (xml, text) => {
+  const out = xml.replace(/(All Mage&apos;s Legacies have 32% increased effect per duplicate Mage&apos;s Legacy you have\n)/, `$1${text}\n`)
+  assert.notEqual(out, xml, `belt line ${text}`)
+  return out
+}
+
+test('leave-one-out keeps an applied input that moves TotalEHP even when DPS does not move', { skip, timeout: 300_000 }, () => {
+  // "while you have Energy Shield" is inert on the bare build; flat Armour behind it moves EHP and nothing offensive.
+  const xml = beltLine(bareXml, '+3000 to Armour while you have Energy Shield')
+  const a = calc(xml, '--auto-config').autoConfig
+  const es = a.applied.find((x) => x.key === 'conditionHaveEnergyShield')
+  assert.ok(es, `kept: applied ${a.applied.map((x) => x.key)}, inert ${(a.inert ?? []).map((x) => x.key)}`)
+  assert.equal(es.judge, 'TotalEHP')
+  assert.ok(es.contribution.TotalEHP > 0, `TotalEHP contribution ${JSON.stringify(es.contribution)}`)
+  assert.equal(es.contribution.TotalDPS, undefined, 'no DPS contribution')
+  assert.equal(es.contribution.FullDPS, undefined, 'no Full DPS contribution')
+  // Without the defensive line the same input is dropped as inert (the control).
+  const ctl = calc(bareXml, '--auto-config').autoConfig
+  assert.ok((ctl.inert ?? []).some((x) => x.key === 'conditionHaveEnergyShield'))
+})
+
+test('defensive: being hit is suggested on its EHP delta; Low Life / Low ES / Stunned without a mechanic never are', { skip, timeout: 600_000 }, () => {
+  let xml = beltLine(bareXml, "50% increased Armour if you've been Hit Recently")
+  xml = beltLine(xml, '+15% to all Elemental Resistances while on Low Life')
+  xml = beltLine(xml, '30% increased Evasion Rating while on Low Energy Shield')
+  xml = beltLine(xml, "+15% to all Elemental Resistances if you've been Stunned Recently")
+  const a = calc(xml, '--auto-config=suggest').autoConfig
+  const hit = a.suggested.find((x) => x.key === 'conditionBeenHitRecently')
+  assert.ok(hit, 'being hit recently is suggested')
+  assert.equal(hit.judge, 'TotalEHP')
+  assert.ok(hit.ehpDeltaPct > 0, `ehpDeltaPct ${hit.ehpDeltaPct}`)
+  assert.equal(typeof hit.dpsDeltaPct, 'number', 'dpsDeltaPct reported alongside')
+  assert.ok(!a.applied.some((x) => x.key === 'conditionBeenHitRecently'), 'never Tier 1')
+  for (const k of ['conditionLowLife', 'conditionLowEnergyShield', 'conditionStunnedRecently']) {
+    assert.ok(!a.applied.some((x) => x.key === k), `${k} applied`)
+    assert.ok(!a.suggested.some((x) => x.key === k), `${k} suggested without a reservation or mechanic`)
+  }
+  // Catalog: function tooltips (conditionLowLife / conditionFullLife) are called, never shown as a function reference.
+  for (const e of a.catalog) if (e.tooltip !== undefined) assert.doesNotMatch(e.tooltip, /^function: 0x/, e.key)
+  const low = a.catalog.find((e) => e.key === 'conditionLowLife')
+  assert.ok(low, 'conditionLowLife is in the catalog (a modifier uses it)')
+  assert.match(low.tooltip, /Low Life/)
+})
