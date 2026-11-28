@@ -1,7 +1,7 @@
 // Corpus parity: every fixture in fixtures/corpus decoded and recomputed by the native engine must reproduce its oracle
 // (snapshot.export.PlayerStat and MinionStat, compared with diff() from compare.mjs: 1e-9 relative).
 //   npm run test:corpus-parity      (needs build/native/pobcalc: scripts/checkout-pob2.sh, npm run build:native)
-// ninja-default is REAL: its oracle is the PlayerStat/MinionStat PoB desktop wrote into the export, and the engine is
+// ninja-default and monk-unconfigured are REAL: its oracle is the PlayerStat/MinionStat PoB desktop wrote into the export, and the engine is
 // also checked against the XML directly. The other fixtures are SYNTHETIC edits of it whose oracle is the engine's
 // own earlier recompute (scripts/make-corpus.mjs), so for those a pass means "unchanged", not "matches PoB desktop".
 import assert from 'node:assert/strict'
@@ -13,7 +13,7 @@ const runs = skip ? null : pool(manifest, (f) => runFixture(f.id))
 const get = (path, obj) => path.split('.').reduce((o, k) => o?.[k], obj)
 
 test('manifest lists the real fixture and labels every other one synthetic', () => {
-  assert.equal(manifest.filter((f) => !f.synthetic).map((f) => f.id).join(), 'ninja-default')
+  assert.equal(manifest.filter((f) => !f.synthetic).map((f) => f.id).join(), 'monk-unconfigured,ninja-default')
   assert.ok(manifest.length >= 15)
   for (const f of manifest) assert.equal(oracleOf(f.id).synthetic, f.synthetic, f.id)
 })
@@ -35,7 +35,7 @@ for (const [i, f] of manifest.entries()) {
       assert.ok(Object.keys(xmlPlayer).length > 50, 'the real export carries PlayerStat')
       assert.deepEqual(diff(exp.PlayerStat, xmlPlayer, 'PlayerStat'), [])
       assert.deepEqual(diff(exp.MinionStat, xmlStats(xml, 'MinionStat'), 'MinionStat'), [])
-      assert.equal(Math.round(exp.PlayerStat.TotalDPS), 186706)
+      assert.equal(Math.round(exp.PlayerStat.TotalDPS), { 'ninja-default': 186706, 'monk-unconfigured': 113587 }[f.id])
     }
   })
 }

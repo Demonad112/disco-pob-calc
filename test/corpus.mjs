@@ -1,6 +1,6 @@
 // Shared by the corpus tests: reads fixtures/corpus/manifest.json and runs the native engine (build/native/pobcalc)
 // on each fixture, a few at a time (each run is a ~15 s PoB boot).
-//   Real fixture:      ninja-default (a PoB2 export; oracle = the PlayerStat/MinionStat block PoB wrote into the XML).
+//   Real fixtures:     ninja-default, monk-unconfigured (PoB2 exports; oracle = the PlayerStat/MinionStat block PoB wrote into the XML).
 //   Synthetic fixtures: ninja-default's XML edited by scripts/make-corpus.mjs; their oracle is the native engine's own
 //                       recompute, so those tests catch regressions only, not engine errors.
 import { execFile } from 'node:child_process'

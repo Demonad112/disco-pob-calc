@@ -1,4 +1,4 @@
-// Builds fixtures/corpus/ from the one real PoB2 code in the repo (fixtures/oracle/ninja-default).
+// Builds fixtures/corpus/ from the real PoB2 codes in the repo (fixtures/oracle/ninja-default, monk-unconfigured).
 //   node scripts/make-corpus.mjs        (needs build/native/pobcalc and vendor/pob2: scripts/checkout-pob2.sh, npm run build:native)
 //
 // - `ninja-default` is REAL: its oracle is the PlayerStat block that PoB wrote into the export.
@@ -55,6 +55,7 @@ const CONTAGION = { gem: 'SkillGemContagion', name: 'Contagion', skill: 'Contagi
 // Power Charge generator facts about ninja-default: node 65204 (+2 max Power Charges) takes the maximum from 5 to the
 // base 3; Profane Ritual (group 11) is the only skill that generates charges.
 export const FIXTURES = [
+  { id: 'monk-unconfigured', synthetic: false, src: 'monk-unconfigured', archetypes: ['spell', 'charges-with-generator', 'es-evasion', 'ailments'], note: 'a real app export of the ninja-default Monk with an empty Config tab (PoB wrote its PlayerStat block): the auto-config reference', edit: (x) => x },
   { id: 'ninja-default', synthetic: false, archetypes: ['spell', 'charges-with-generator', 'es-evasion'], note: 'the real export; Config as the player set it', edit: (x) => x },
   { id: 'bare-spell', synthetic: true, archetypes: ['spell', 'charges-with-generator', 'es-evasion'], note: 'ninja-default with an empty Config tab (main skill Storm Wave)', edit: bare },
   { id: 'attack', synthetic: true, archetypes: ['attack', 'charges-with-generator'], note: 'empty Config, main skill switched to Quarterstaff Strike', edit: pipe(bare, mainGroup(1)) },
@@ -88,7 +89,7 @@ const xmlStats = (xml, tag) => Object.fromEntries([...xml.matchAll(new RegExp(`<
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   const manifest = []
   for (const fx of FIXTURES) {
-    const xml = fx.edit(refXml)
+    const xml = fx.edit(fx.src ? await decodePobCode(readFileSync(ROOT + `fixtures/oracle/${fx.src}.code.txt`, 'utf8')) : refXml)
     const res = recompute(xml, fx.id)
     const ps = fx.synthetic ? res.snapshot.export.PlayerStat : xmlStats(xml, 'PlayerStat')
     const ms = fx.synthetic ? res.snapshot.export.MinionStat : xmlStats(xml, 'MinionStat')
