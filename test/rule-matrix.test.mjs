@@ -54,6 +54,12 @@ const RULES = {
     defensive: ['conditionBeenHitRecently'],
     absent: ['conditionLowLife', 'conditionLowEnergyShield', 'conditionStunnedRecently'],
   },
+  'low-life-reserved': {
+    why: '60% of Life reserved keeps you on Low Life and a modifier needs it: suggested on a measured TotalEHP gain, never Tier 1',
+    notApplied: ['conditionLowLife'],
+    defensive: ['conditionLowLife'],
+    absent: ['conditionLowEnergyShield', 'conditionStunnedRecently'],
+  },
   'leech-consumer': { why: 'Leeches ... + "Damage while Leeching": the only fixture where leeching applies', applied: ['conditionLeeching'] },
   'leech-attack': { why: 'a leech source with no consumer: nothing to switch on', notApplied: LEECH },
   'attack': { why: 'no leech modifiers at all', notApplied: LEECH },

@@ -225,6 +225,20 @@
     ]
   },
   {
+    "id": "low-life-reserved",
+    "synthetic": true,
+    "archetypes": [
+      "defensive",
+      "attack"
+    ],
+    "note": "attack fixture + belt lines \"Reserves 60% of Life\" (ExtraLifeReserved) and \"+3000 to Armour while on Low Life\": a reservation that keeps you on Low Life, so the Low Life consumer is a real candidate",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 72342.86836864,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
     "id": "life-armour",
     "synthetic": true,
     "archetypes": [
