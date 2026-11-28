@@ -34,10 +34,25 @@ assert.notEqual(bareXml, refXml)
 // Tier 1 keys autoconfig may ever apply.
 const TIER1 = new Set([
   'usePowerCharges', 'multiplierRage', 'multiplierCombo', 'conditionHaveEnergyShield', 'conditionCritRecently',
-  'conditionNonCritRecently', 'conditionEnemyDazed', 'conditionEnemyShocked', 'conditionShockEffect',
-  'useFrenzyCharges', 'useEnduranceCharges', 'buffOnslaught', 'conditionLeeching', 'conditionLeechingLife',
+  'conditionNonCritRecently', 'conditionEnemyDazed', 'conditionEnemyShocked',
+  'useFrenzyCharges', 'useEnduranceCharges', 'conditionLeeching', 'conditionLeechingLife',
   'conditionLeechingMana', 'conditionLeechingEnergyShield',
 ])
+// Never applied: Onslaught is situational (PoB grants it itself when a granting modifier's conditions hold) and an
+// assumed Shock effect is either inert or above what the build applies.
+const NEVER = ['buffOnslaught', 'conditionShockEffect']
+
+// The bare build without "Overflowing Power" (+2 to Maximum Power Charges, node 65204): the Power Charge consumers
+// stay (Critical Damage when consuming a Power Charge) and the maximum drops to the base 3 every character has. The
+// only generator left is the socketed Profane Ritual ("the Corpse is consumed and you gain a Power Charge").
+const baseMaxXml = bareXml.replace(/(<Spec [^>]*nodes=")([^"]*)"/, (_, pre, nodes) => {
+  const kept = nodes.split(',').filter((id) => id !== '65204')
+  assert.equal(kept.length, nodes.split(',').length - 1, 'fixture allocates node 65204')
+  return `${pre}${kept.join(',')}"`
+})
+// ...and with Profane Ritual disabled too: a consumer with nothing that generates the charges.
+const noGenXml = baseMaxXml.replace(/(<Gem [^>]*)enabled="true"([^>]*nameSpec="Profane Ritual")/, '$1enabled="false"$2')
+assert.notEqual(noGenXml, baseMaxXml)
 
 test('off by default: no autoConfig in the result and numbers unchanged', { skip, timeout: 300_000 }, () => {
   const r = calc(bareXml)
@@ -59,6 +74,8 @@ test('apply: raises DPS, applies Tier 1 keys only, reports baseline', { skip, ti
     assert.ok(x.source)
   }
   assert.ok(a.applied.some((x) => x.key === 'usePowerCharges'))
+  assert.match(a.applied.find((x) => x.key === 'usePowerCharges').source, /Maximum Power Charges 5 \(base 3\)/)
+  for (const k of NEVER) assert.ok(!a.applied.some((x) => x.key === k), `${k} is never applied`)
   // Situational toggles are reported but not applied, and carry no measured delta without 'suggest'.
   assert.ok(a.suggested.length > 0)
   for (const s of a.suggested) {
@@ -151,4 +168,22 @@ test('catalog lists every option, measures enemyIsBoss first, and measure() fill
   assert.ok(lvl.trials[0].vs.TotalEHP.pct > 0, 'a much lower enemy level helps')
   assert.ok(Object.keys(lvl.trials[1].vs).length > 0, 'every tried value is measured')
   assert.ok(m.measured.some((e) => e.key === 'conditionBeenHitRecently' && e.measured))
+})
+
+test('charges: base maximum plus a skill that generates them is applied, with the skill as the reason', { skip, timeout: 300_000 }, () => {
+  const r = calc(baseMaxXml, '--auto-config')
+  assert.equal(r.snapshot.stats.PowerChargesMax, 3)
+  const x = r.autoConfig.applied.find((e) => e.key === 'usePowerCharges')
+  assert.ok(x, 'applied')
+  assert.match(x.source, /Profane Ritual/)
+})
+
+test('charges: a consumer without a generator is only suggested', { skip, timeout: 300_000 }, () => {
+  const r = calc(noGenXml, '--auto-config')
+  const a = r.autoConfig
+  assert.equal(r.snapshot.stats.PowerChargesMax, 3)
+  assert.ok(!a.applied.some((x) => x.key === 'usePowerCharges'), 'no generator: not applied')
+  const s = a.suggested.find((x) => x.key === 'usePowerCharges')
+  assert.ok(s, 'reported as situational')
+  assert.match(s.source, /nothing found that generates them/)
 })

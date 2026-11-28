@@ -276,6 +276,7 @@ function fillEffect(e, cell) {
   const kids = lines.map((l) => mk('div', { className: `${l.cls}${l.stale ? ' stale' : ''}`, textContent: l.text }))
   if (e.measuring) kids.push(mk('div', { className: 'meta', textContent: 'measuring…' }))
   else if (!e.measured) kids.push(mk('button', { type: 'button', className: 'secondary small', textContent: `Measure (~${ms(trialsOf(e) * trialMs)})`, onclick: () => measureSpecs([{ key: e.key }]) }))
+  else if (e.error) kids.push(mk('div', { className: 'meta', textContent: `PoB error while measuring: ${e.error}` }))
   else if (!lines.length) kids.push(mk('div', { className: 'meta', textContent: 'no change in tracked stats' }))
   cell.replaceChildren(...kids)
 }
@@ -356,6 +357,7 @@ function mergeMeasure(m) {
   if (m.effect) { e.effect = m.effect; fresh('effect') }
   if (m.perUnit) { e.perUnit = m.perUnit; fresh('perUnit') }
   if (m.total) { e.total = m.total; fresh('total') }
+  e.error = m.error
   if (m.options && e.options) {
     for (const o of m.options) {
       const mine = e.options.find((x) => x.val === o.val)
@@ -384,7 +386,8 @@ async function measureSpecs(specs, g = gen) {
     for (let i = 0; i < specs.length; i += 4) {
       const chunk = specs.slice(i, i + 4)
       const res = await measure(chunk, { skip: () => g !== gen })
-      if (!res) break // the Config changed meanwhile: these numbers would be for the old one
+      // The Config changed meanwhile (before this chunk started, or while it ran): these numbers are for the old one.
+      if (!res || g !== gen) break
       const trials = chunk.reduce((n, sp) => n + (sp.values ? sp.values.length : trialsOf(entries.get(sp.key))), 0)
       if (res.ms && trials) trialMs = Math.round(res.ms / trials)
       for (const m of res.measured) mergeMeasure(m)
