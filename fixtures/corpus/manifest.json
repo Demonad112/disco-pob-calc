@@ -1,0 +1,211 @@
+[
+  {
+    "id": "ninja-default",
+    "synthetic": false,
+    "archetypes": [
+      "spell",
+      "charges-with-generator",
+      "es-evasion"
+    ],
+    "note": "the real export; Config as the player set it",
+    "mainSkill": "Storm Wave",
+    "TotalDPS": 186706.45241768,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "bare-spell",
+    "synthetic": true,
+    "archetypes": [
+      "spell",
+      "charges-with-generator",
+      "es-evasion"
+    ],
+    "note": "ninja-default with an empty Config tab (main skill Storm Wave)",
+    "mainSkill": "Storm Wave",
+    "TotalDPS": 113586.92577509,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "attack",
+    "synthetic": true,
+    "archetypes": [
+      "attack",
+      "charges-with-generator"
+    ],
+    "note": "empty Config, main skill switched to Quarterstaff Strike",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 72342.86836864,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "charges-base-max-skill-generator",
+    "synthetic": true,
+    "archetypes": [
+      "charges-with-generator"
+    ],
+    "note": "empty Config, node 65204 removed so max Power Charges is the base 3; Profane Ritual still generates them",
+    "mainSkill": "Storm Wave",
+    "TotalDPS": 113586.92577509,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "charges-no-generator",
+    "synthetic": true,
+    "archetypes": [
+      "charges-without-generator"
+    ],
+    "note": "as above and Profane Ritual disabled: consumers remain, nothing generates charges",
+    "mainSkill": "Storm Wave",
+    "TotalDPS": 113586.92577509,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "spell-fireball",
+    "synthetic": true,
+    "archetypes": [
+      "spell"
+    ],
+    "note": "empty Config, extra group Fireball as main skill",
+    "mainSkill": "Fireball",
+    "TotalDPS": 1207.1336531667,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "minion-zombie",
+    "synthetic": true,
+    "archetypes": [
+      "minion",
+      "spell"
+    ],
+    "note": "empty Config, extra group Raise Zombie as main skill",
+    "mainSkill": "Raise Zombie",
+    "TotalDPS": 0,
+    "positive": [
+      "MinionStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "totem",
+    "synthetic": true,
+    "archetypes": [
+      "totem",
+      "attack"
+    ],
+    "note": "empty Config, extra group Shockwave Totem, main skill = its second active skill \"Shockwave Slam\" (the totem's own damage)",
+    "mainSkill": "Shockwave Slam",
+    "TotalDPS": 6944.8843420535,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "dot-contagion",
+    "synthetic": true,
+    "archetypes": [
+      "dot-ailment",
+      "spell"
+    ],
+    "note": "empty Config, extra group Contagion as main skill",
+    "mainSkill": "Contagion",
+    "TotalDPS": 0,
+    "positive": [
+      "PlayerStat.TotalDotDPS",
+      "PlayerStat.CombinedDPS"
+    ]
+  },
+  {
+    "id": "leech-attack",
+    "synthetic": true,
+    "archetypes": [
+      "leech",
+      "attack"
+    ],
+    "note": "attack fixture + belt line \"Leeches 5% of Physical Attack Damage as Life\"",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 72342.86836864,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "leech-consumer",
+    "synthetic": true,
+    "archetypes": [
+      "leech",
+      "attack"
+    ],
+    "note": "leech-attack + belt line \"30% increased Damage while Leeching\": a modifier that needs leeching",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 72342.86836864,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "onslaught-consumer",
+    "synthetic": true,
+    "archetypes": [
+      "onslaught",
+      "attack"
+    ],
+    "note": "attack fixture + belt line \"20% increased Attack Speed during Onslaught\": a consumer, nothing grants Onslaught",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 72342.86836864,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "onslaught-granted",
+    "synthetic": true,
+    "archetypes": [
+      "onslaught",
+      "attack"
+    ],
+    "note": "onslaught-consumer + belt line \"You have Onslaught\": PoB itself already has Onslaught active",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 91778.265840813,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "ci-es",
+    "synthetic": true,
+    "archetypes": [
+      "ci-es"
+    ],
+    "note": "empty Config + keystone Chaos Inoculation (node 56349) added to the allocated nodes",
+    "mainSkill": "Storm Wave",
+    "TotalDPS": 113586.92577509,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
+    "id": "life-armour",
+    "synthetic": true,
+    "archetypes": [
+      "life-armour",
+      "attack"
+    ],
+    "note": "attack fixture + belt lines \"+800 to maximum Life\" and \"+3000 to Armour\"",
+    "mainSkill": "Quarterstaff Strike",
+    "TotalDPS": 72342.86836864,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  }
+]
