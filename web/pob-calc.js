@@ -85,15 +85,17 @@ export function init(opts = {}) {
 /**
  * Calculate one build.
  * @param {string} codeOrXml a PoB2 export code, or its decoded <PathOfBuilding2> XML
- * @param {{ groups?: boolean, autoConfig?: boolean | 'apply' | 'suggest' }} [opts] groups: also recalculate every skill group (slow).
+ * @param {{ groups?: boolean, autoConfig?: boolean | 'apply' | 'suggest', overrides?: Record<string, boolean | number | string> }} [opts] groups: also recalculate every skill group (slow).
  * autoConfig: enable the Config inputs the build can actually use (charges, Rage, Combo, ES, Daze/Shock, crit-recently)
  * and report them in result.autoConfig; 'suggest' also computes each situational toggle's isolated delta. Off by default.
+ * overrides: Config inputs to force (e.g. { enemyIsBoss: 'Boss', usePowerCharges: false }); applied before auto-config, which never overrides them.
+ * With 'suggest', result.autoConfig.catalog lists every option the build shows, its state (export|auto|manual|available) and its measured effect.
  */
 export function calc(codeOrXml, opts = {}) {
   const run = chain.then(async () => {
     await init(initOpts ?? {})
     try {
-      return await send({ type: 'calc', code: codeOrXml, groups: !!opts.groups, autoConfig: opts.autoConfig || false })
+      return await send({ type: 'calc', code: codeOrXml, groups: !!opts.groups, autoConfig: opts.autoConfig || false, overrides: opts.overrides || null })
     } catch (e) {
       if (e.kind === 'fatal') reset() // the next call boots a fresh engine
       throw e

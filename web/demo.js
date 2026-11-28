@@ -80,6 +80,8 @@ async function boot() {
 }
 
 let calcCount = 0
+let overrides = {} // Config inputs the user set on the page; sent with every recalculation of the same code
+let lastCode = ''
 async function run() {
   const code = codeEl.value.trim()
   if (!code) {
@@ -92,7 +94,8 @@ async function run() {
   setStatus(groups ? 'Calculating every skill group… this takes a while.' : 'Calculating…')
   const t0 = performance.now()
   try {
-    const r = await calc(code, { groups, autoConfig })
+    const r = await calc(code, { groups, autoConfig, overrides: lastCode === code ? overrides : (overrides = {}) })
+    lastCode = code
     const wall = performance.now() - t0
     calcCount++
     const label = calcCount === 1 ? 'First calc' : 'Last calc'
@@ -130,8 +133,75 @@ function renderAutoConfig(a) {
   kvTable('autocfg-suggested', sug)
 }
 
+const STAT_LABEL = { TotalDPS: 'DPS', CombinedDPS: 'Combined DPS', TotalEHP: 'EHP', PhysicalMaximumHitTaken: 'Phys max hit', FireMaximumHitTaken: 'Fire max hit', EvadeChance: 'Evade', EffectiveBlockChance: 'Block', PhysicalDamageReduction: 'Phys DR' }
+const signed = (n) => `${n >= 0 ? '+' : ''}${fmt2(n)}`
+// { stat: { from, to, pct } } -> "DPS +27.6% · EHP -10.7% (Evade 40 → 42)"; DPS and EHP lead, the rest in brackets.
+function effectText(d) {
+  if (!d) return ''
+  const part = (k) => {
+    const x = d[k]
+    return x ? `${STAT_LABEL[k]} ${x.pct != null ? `${signed(x.pct)}%` : `${fmt2(x.from)} → ${fmt2(x.to)}`}` : null
+  }
+  const main = ['TotalDPS', 'TotalEHP'].map(part).filter(Boolean)
+  const rest = Object.keys(d).filter((k) => !['TotalDPS', 'TotalEHP', 'CombinedDPS'].includes(k)).map((k) => `${STAT_LABEL[k] ?? k} ${fmt2(d[k].from)} → ${fmt2(d[k].to)}`)
+  if (!main.length && d.CombinedDPS) main.push(part('CombinedDPS'))
+  return [main.join(' · '), rest.length ? `(${rest.join(', ')})` : ''].filter(Boolean).join(' ') || 'no change in tracked stats'
+}
+const effectClass = (d) => { const p = d?.TotalDPS?.pct ?? d?.CombinedDPS?.pct; return p > 0 ? 'pos' : p < 0 ? 'neg' : '' }
+const STATE_LABEL = { export: 'in code', auto: 'auto', manual: 'manual', available: 'available' }
+const rerun = () => { if (!calcBtn.disabled) run() }
+
+function control(e) {
+  const mk = (tag, props) => Object.assign(document.createElement(tag), props)
+  const set = (v) => { overrides[e.key] = v; rerun() }
+  if (e.type === 'check') return mk('input', { type: 'checkbox', checked: e.value === true, onchange: (ev) => set(ev.target.checked) })
+  if (e.type === 'list') {
+    const sel = mk('select', { onchange: (ev) => set(ev.target.value) })
+    for (const o of e.options ?? []) sel.append(mk('option', { value: o.val, textContent: o.label.replace(/\s+/g, ' '), selected: o.selected }))
+    return sel
+  }
+  return mk('input', { type: 'number', min: 0, value: e.value, className: 'num', onchange: (ev) => ev.target.value !== '' && set(Number(ev.target.value)) })
+}
+
+function renderCatalog(a) {
+  const panel = $('catalog-panel')
+  const cat = a?.catalog
+  panel.hidden = !cat
+  if (!cat) return
+  const body = $('catalog').tBodies[0]
+  const rows = cat.map((e) => {
+    const tr = document.createElement('tr')
+    const name = document.createElement('td')
+    name.innerHTML = `<span class="badge ${e.state}">${STATE_LABEL[e.state]}</span> `
+    name.append(Object.assign(document.createElement('span'), { textContent: e.label, title: e.tooltip ?? '' }))
+    const ctl = document.createElement('td')
+    ctl.append(control(e))
+    const eff = document.createElement('td')
+    const lines = []
+    if (e.type === 'check') lines.push([e.effect, e.value ? 'turning it off: opposite of this' : 'turning it on:'])
+    if (e.type === 'count') {
+      if (e.perUnit) lines.push([e.perUnit, 'per extra point:'])
+      if (e.total) lines.push([e.total, `${fmt2(e.value)} vs 0:`])
+    }
+    if (e.type === 'list') for (const o of e.options ?? []) if (!o.selected && o.vsSelected && Object.keys(o.vsSelected).length) lines.push([o.vsSelected, `${o.label.replace(/\s+/g, ' ')}:`])
+    for (const [d, label] of lines) {
+      const div = document.createElement('div')
+      div.className = effectClass(d)
+      // A set toggle was measured off→on, so its numbers are what it currently adds.
+      div.textContent = `${e.type === 'check' ? (e.value ? 'adds: ' : 'would add: ') : label + ' '}${effectText(d)}`
+      eff.append(div)
+    }
+    if (!lines.length) eff.textContent = 'no change in tracked stats'
+    tr.append(name, ctl, eff)
+    return tr
+  })
+  body.replaceChildren(...rows)
+  $('catalog-note').textContent = `${cat.length} options measured on this build, one change at a time (PoB recalculates each).${a.unmeasured ? ` ${a.unmeasured} other options are shown by PoB but not measured (trial budget).` : ''} Changing a control recalculates the build.`
+}
+
 function render(r) {
   renderAutoConfig(r.autoConfig)
+  renderCatalog(r.autoConfig)
   const s = r.snapshot.stats ?? {}
   $('results').hidden = false
   $('total-dps').textContent = fmtInt(s.TotalDPS)
@@ -255,6 +325,7 @@ codeEl.addEventListener('drop', (e) => {
   loadFile(f)
 })
 calcBtn.addEventListener('click', run)
+$('reset-manual').addEventListener('click', () => { overrides = {}; rerun() })
 codeEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !calcBtn.disabled) run()
 })

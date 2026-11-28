@@ -72,12 +72,13 @@ function M.calc(xml, wantGroups, opts)
 	local level = opts and opts.autoConfig
 	if level == true then level = "apply" end
 	local autoInfo
+	local overrides = opts and opts.overrides
 	local plainLoad = pob.load
-	if level then
+	if level or overrides then
 		pob.load = function(x)
 			local loadError = plainLoad(x)
 			if loadError then return loadError end
-			local done, res = pcall(autoconfig.run, pob, level)
+			local done, res = pcall(autoconfig.run, pob, level, overrides)
 			if done then
 				autoInfo = autoInfo or res
 			elseif not autoInfo then

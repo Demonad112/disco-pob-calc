@@ -1,5 +1,16 @@
 // Thin wrapper over the Emscripten module (dist/engine.mjs): runs lua/calc.lua inside it.
 // Shared by the browser worker (web/pob-worker.js) and the Node tests, so both drive the engine the same way.
+// { key: boolean | number | string } -> Lua table literal. Keys are PoB Config var names; anything else is dropped.
+function luaOverrides(o) {
+  const parts = []
+  for (const [k, v] of Object.entries(o ?? {})) {
+    if (!/^[A-Za-z0-9_]+$/.test(k)) continue
+    if (typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))) parts.push(`${k}=${v}`)
+    else if (typeof v === 'string') parts.push(`${k}=${JSON.stringify(v)}`)
+  }
+  return parts.length ? `{ ${parts.join(', ')} }` : 'nil'
+}
+
 export class EngineError extends Error {}
 
 export const LUA_DIR = '/pob/lua'
@@ -28,13 +39,13 @@ export function wrapEngine(Module) {
     },
     /** Calculate one decoded build XML. Returns calc.lua's { snapshot, groups, autoConfig, timings } or { error, timings }.
      *  autoConfig: false (as exported), true/'apply' (enable usable Config inputs), 'suggest' (+ per-toggle deltas). */
-    calc(xml, { groups = false, autoConfig = false } = {}) {
+    calc(xml, { groups = false, autoConfig = false, overrides = null } = {}) {
       const auto = autoConfig === 'suggest' ? '"suggest"' : autoConfig ? '"apply"' : 'nil'
       Module.FS.writeFile('/tmp/build.xml', xml)
       const json = evalLua(
         `local f = assert(io.open("/tmp/build.xml", "rb")); local xml = f:read("*a"); f:close()
          os.remove("/tmp/build.xml")
-         return CALC.calc(xml, ${groups ? 'true' : 'false'}, { autoConfig = ${auto} })`,
+         return CALC.calc(xml, ${groups ? 'true' : 'false'}, { autoConfig = ${auto}, overrides = ${luaOverrides(overrides)} })`,
       )
       return JSON.parse(json)
     },
