@@ -39,3 +39,16 @@ for (const [i, f] of manifest.entries()) {
     }
   })
 }
+
+test('Full DPS: hidden granted effects are labelled with their parent skill; name stays PoB\'s own', { skip, timeout: 600_000 }, async () => {
+  const i = manifest.findIndex((f) => f.id === 'monk-unconfigured')
+  const rows = (await runs)[i].res.snapshot.fullDpsSkills
+  const by = Object.fromEntries(rows.map((r) => [r.name, r]))
+  assert.equal(by.Projectile?.label, 'Staggering Palm › Projectile')
+  assert.equal(by.Projectile.parent, 'Staggering Palm')
+  assert.equal(by['Charged Shockwave']?.label, 'Charged Staff › Charged Shockwave')
+  // Visible skills and PoB's aggregate rows keep their name as the label.
+  assert.equal(by['Storm Wave'].label, 'Storm Wave')
+  assert.equal(by['Storm Wave'].parent, undefined)
+  for (const r of rows) assert.ok(r.label.endsWith(r.name), r.name)
+})

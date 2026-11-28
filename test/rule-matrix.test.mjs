@@ -42,6 +42,23 @@ const RULES = {
     suggested: ['conditionNonCritRecently', 'conditionFrozenEnemyRecently'],
     inert: ['conditionHaveEnergyShield'],
     values: { multiplierCombo: 8 },
+    // Defensive: being hit recently has a consumer (Tier 2, judged on TotalEHP); the Savage Hit / Hit by <element>
+    // options PoB only shows because they imply it are not separate candidates, and Low Life is no candidate with
+    // nothing reserving Life.
+    defensive: ['conditionBeenHitRecently'],
+    absent: ['conditionBeenSavageHitRecently', 'conditionHitByFireDamageRecently', 'conditionHitByColdDamageRecently', 'conditionHitByLightningDamageRecently', 'conditionLowLife', 'conditionStunnedRecently'],
+  },
+  'defensive-consumers': {
+    why: 'consumers of being hit, Low Life, Low ES and Stunned recently, with no Life reservation or mechanic keeping you there: only being hit is suggested (Tier 2, on TotalEHP)',
+    notApplied: ['conditionBeenHitRecently'],
+    defensive: ['conditionBeenHitRecently'],
+    absent: ['conditionLowLife', 'conditionLowEnergyShield', 'conditionStunnedRecently'],
+  },
+  'low-life-reserved': {
+    why: '60% of Life reserved keeps you on Low Life and a modifier needs it: suggested on a measured TotalEHP gain, never Tier 1',
+    notApplied: ['conditionLowLife'],
+    defensive: ['conditionLowLife'],
+    absent: ['conditionLowEnergyShield', 'conditionStunnedRecently'],
   },
   'leech-consumer': { why: 'Leeches ... + "Damage while Leeching": the only fixture where leeching applies', applied: ['conditionLeeching'] },
   'leech-attack': { why: 'a leech source with no consumer: nothing to switch on', notApplied: LEECH },
@@ -79,6 +96,13 @@ for (const [i, f] of manifest.entries()) {
     for (const k of r.notApplied ?? []) assert.ok(!applied.includes(k), `${k} must not be applied`)
     for (const k of r.suggested ?? []) assert.ok(suggested.includes(k), `${k} must be suggested`)
     for (const k of r.absent ?? []) assert.ok(!applied.includes(k) && !suggested.includes(k), `${k} must be neither applied nor suggested`)
+    for (const k of r.defensive ?? []) {
+      const x = a.suggested.find((e) => e.key === k)
+      assert.ok(x, `${k} must be suggested`)
+      assert.equal(x.judge, 'TotalEHP', `${k} is judged on TotalEHP`)
+    }
+    // Low Life / Low ES / Stunned Recently are never Tier 1 anywhere.
+    for (const k of ['conditionLowLife', 'conditionLowEnergyShield', 'conditionStunnedRecently']) assert.ok(!applied.includes(k), `${k} is never applied`)
     for (const k of r.inert ?? []) assert.ok((a.inert ?? []).some((x) => x.key === k), `${k} must be dropped as inert`)
     for (const [k, v] of Object.entries(r.values ?? {})) assert.equal(a.applied.find((x) => x.key === k)?.value, v, `${k} value`)
     // Every applied key was measured leave-one-out and moves at least one of TotalDPS / FullDPS / TotalEHP.

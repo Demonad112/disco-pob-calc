@@ -507,7 +507,7 @@ function renderSkills(r) {
     for (const f of full) {
       const tr = document.createElement('tr')
       tr.innerHTML = `<td></td><td class="n">${f.count}</td><td class="n">${fmtInt(f.dps)}</td><td class="n">${fmtInt(f.value)}</td>`
-      tr.cells[0].textContent = f.name + (f.skillPart ? ` (${f.skillPart})` : '')
+      tr.cells[0].textContent = (f.label ?? f.name) + (f.skillPart ? ` (${f.skillPart})` : '')
       body.append(tr)
     }
     table.append(body)
