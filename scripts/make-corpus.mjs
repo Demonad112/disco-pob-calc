@@ -32,10 +32,12 @@ const addNode = (id) => (xml) => must(xml, { re: /(<Spec [^>]*nodes=")([^"]*)"/,
 const disableGem = (name) => (xml) =>
   must(xml, { re: new RegExp(`(<Gem [^>]*)enabled="true"([^>]*nameSpec="${name}")`), to: '$1enabled="false"$2' }, `disable ${name}`)
 // A new skill group appended to the set and made the main one (group 19: the export has 18).
-const addSkill = (gem) => (xml) => {
+// `active` is the mainActiveSkill index inside the group: a gem can carry several active skills, and a totem's damage
+// sits on the second one (Shockwave Totem -> "Shockwave Slam"); the first only places the totem and reports 0 DPS.
+const addSkill = (gem, active = 1) => (xml) => {
   const groups = (xml.match(/<Skill /g) || []).length
   const line = `<Gem corruptLevel="0" corrupted="nil" count="1" enableGlobal1="true" enableGlobal2="true" enabled="true" gemId="Metadata/Items/Gems/${gem.gem}" level="20" nameSpec="${gem.name}" quality="0" skillId="${gem.skill}" variantId="${gem.variant}"/>`
-  const group = `<Skill enabled="true" includeInFullDPS="nil" label="" mainActiveSkill="1" mainActiveSkillCalcs="1">${line}</Skill>\n\t\t`
+  const group = `<Skill enabled="true" includeInFullDPS="nil" label="" mainActiveSkill="${active}" mainActiveSkillCalcs="1">${line}</Skill>\n\t\t`
   const out = xml.replace(/(\n\t\t<\/SkillSet>)/, `\n\t\t${group.trimEnd()}$1`)
   if (out === xml) throw new Error('addSkill: no </SkillSet>')
   return mainGroup(groups + 1)(out)
@@ -59,9 +61,9 @@ export const FIXTURES = [
   { id: 'charges-base-max-skill-generator', synthetic: true, archetypes: ['charges-with-generator'], note: 'empty Config, node 65204 removed so max Power Charges is the base 3; Profane Ritual still generates them', edit: pipe(bare, dropNode(65204)) },
   { id: 'charges-no-generator', synthetic: true, archetypes: ['charges-without-generator'], note: 'as above and Profane Ritual disabled: consumers remain, nothing generates charges', edit: pipe(bare, dropNode(65204), disableGem('Profane Ritual')) },
   { id: 'spell-fireball', synthetic: true, archetypes: ['spell'], note: 'empty Config, extra group Fireball as main skill', edit: pipe(bare, addSkill(FIREBALL)) },
-  { id: 'minion-zombie', synthetic: true, archetypes: ['minion', 'spell'], note: 'empty Config, extra group Raise Zombie as main skill', edit: pipe(bare, addSkill(ZOMBIE)) },
-  { id: 'totem', synthetic: true, archetypes: ['totem', 'attack'], note: 'empty Config, extra group Shockwave Totem as main skill', edit: pipe(bare, addSkill(TOTEM)) },
-  { id: 'dot-contagion', synthetic: true, archetypes: ['dot-ailment', 'spell'], note: 'empty Config, extra group Contagion as main skill', edit: pipe(bare, addSkill(CONTAGION)) },
+  { id: 'minion-zombie', synthetic: true, archetypes: ['minion', 'spell'], positive: ['MinionStat.TotalDPS'], note: 'empty Config, extra group Raise Zombie as main skill', edit: pipe(bare, addSkill(ZOMBIE)) },
+  { id: 'totem', synthetic: true, archetypes: ['totem', 'attack'], positive: ['PlayerStat.TotalDPS'], note: 'empty Config, extra group Shockwave Totem, main skill = its second active skill "Shockwave Slam" (the totem\'s own damage)', edit: pipe(bare, addSkill(TOTEM, 2)) },
+  { id: 'dot-contagion', synthetic: true, archetypes: ['dot-ailment', 'spell'], positive: ['PlayerStat.TotalDotDPS', 'PlayerStat.CombinedDPS'], note: 'empty Config, extra group Contagion as main skill', edit: pipe(bare, addSkill(CONTAGION)) },
   { id: 'leech-attack', synthetic: true, archetypes: ['leech', 'attack'], note: 'attack fixture + belt line "Leeches 5% of Physical Attack Damage as Life"', edit: pipe(bare, mainGroup(1), beltLine('Leeches 5% of Physical Attack Damage as Life')) },
   { id: 'leech-consumer', synthetic: true, archetypes: ['leech', 'attack'], note: 'leech-attack + belt line "30% increased Damage while Leeching": a modifier that needs leeching', edit: pipe(bare, mainGroup(1), beltLine('Leeches 5% of Physical Attack Damage as Life'), beltLine('30% increased Damage while Leeching')) },
   { id: 'onslaught-consumer', synthetic: true, archetypes: ['onslaught', 'attack'], note: 'attack fixture + belt line "20% increased Attack Speed during Onslaught": a consumer, nothing grants Onslaught', edit: pipe(bare, mainGroup(1), beltLine('20% increased Attack Speed during Onslaught')) },
@@ -95,7 +97,7 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
       OUT + `${fx.id}.oracle.json`,
       JSON.stringify({ id: fx.id, synthetic: fx.synthetic, oracleSource: fx.synthetic ? 'native engine recompute of the edited XML (regression only)' : "the XML's own PlayerStat block (PoB desktop)", PlayerStat: ps, MinionStat: ms }, null, 2) + '\n',
     )
-    manifest.push({ id: fx.id, synthetic: fx.synthetic, archetypes: fx.archetypes, note: fx.note, mainSkill: (res.mainSkill ?? res.snapshot.mainSkill)?.skill ?? null, TotalDPS: ps.TotalDPS })
+    manifest.push({ id: fx.id, synthetic: fx.synthetic, archetypes: fx.archetypes, note: fx.note, mainSkill: (res.mainSkill ?? res.snapshot.mainSkill)?.skill ?? null, TotalDPS: ps.TotalDPS, positive: fx.positive ?? ['PlayerStat.TotalDPS'] })
     console.log(fx.id.padEnd(36), fx.synthetic ? 'synthetic' : 'REAL     ', String((res.mainSkill ?? res.snapshot.mainSkill)?.skill).padEnd(24), Math.round(ps.TotalDPS))
   }
   writeFileSync(OUT + 'manifest.json', JSON.stringify(manifest, null, 2) + '\n')
