@@ -1,5 +1,21 @@
 [
   {
+    "id": "monk-unconfigured",
+    "synthetic": false,
+    "archetypes": [
+      "spell",
+      "charges-with-generator",
+      "es-evasion",
+      "ailments"
+    ],
+    "note": "a real app export of the ninja-default Monk with an empty Config tab (PoB wrote its PlayerStat block): the auto-config reference",
+    "mainSkill": "Storm Wave",
+    "TotalDPS": 113586.92577509,
+    "positive": [
+      "PlayerStat.TotalDPS"
+    ]
+  },
+  {
     "id": "ninja-default",
     "synthetic": false,
     "archetypes": [

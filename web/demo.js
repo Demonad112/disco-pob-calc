@@ -197,7 +197,11 @@ function renderAutoConfig(a) {
   $('autocfg-sum').textContent = a.error
     ? `failed: ${a.error}`
     : `${fmtInt(a.baselineDPS)} → ${fmtInt(a.configuredDPS)} DPS`
-  kvTable('autocfg-applied', a.applied.length ? a.applied.map((x) => [`${x.key} = ${x.value}`, x.source]) : [['Nothing to apply', 'No unset toggle has both a source and a consumer in this build.']])
+  // contribution: % each applied input adds on top of the others (leave-one-out); inert: dropped, moved nothing.
+  const contrib = (c) => (c ? Object.entries(c).map(([k, v]) => ` · ${k === 'TotalEHP' ? 'EHP' : k === 'FullDPS' ? 'Full DPS' : 'DPS'} ${v >= 0 ? '+' : ''}${v}%`).join('') : '')
+  const rows = a.applied.map((x) => [`${x.key} = ${x.value}`, `${x.source}${contrib(x.contribution)}${x.error ? ` · trial failed: ${x.error}` : ''}`])
+  for (const x of a.inert ?? []) rows.push([`${x.key} (not applied)`, `${x.source} · measured: changes nothing`])
+  kvTable('autocfg-applied', rows.length ? rows : [['Nothing to apply', 'No unset toggle has both a source and a consumer in this build.']])
   const sug = a.suggested.map((x) => {
     const d = suggestDelta(x)
     return [`${x.key}`, `${x.source}${d?.dps != null ? ` · ${d.dps >= 0 ? '+' : ''}${d.dps}% DPS` : ''}${d?.ehp ? ` · ${d.ehp >= 0 ? '+' : ''}${fmtInt(d.ehp)} EHP` : ''}`]

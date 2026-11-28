@@ -12,6 +12,11 @@ const TIER1 = new Set([
   'conditionNonCritRecently', 'conditionEnemyDazed', 'conditionEnemyShocked',
   'useFrenzyCharges', 'useEnduranceCharges', 'conditionLeeching', 'conditionLeechingLife',
   'conditionLeechingMana', 'conditionLeechingEnergyShield',
+  // Chance-based states, applied only at >= 90% modelled uptime; own actions while the main skill is used.
+  'conditionEnemyChilled', 'conditionEnemyIgnited', 'conditionEnemyBleeding', 'conditionEnemyPoisoned',
+  'conditionShockedEnemyRecently', 'conditionChilledEnemyRecently', 'conditionIgnitedEnemyRecently',
+  'conditionFrozenEnemyRecently', 'conditionStunnedEnemyRecently',
+  'conditionUsedSkillRecently', 'conditionAttackedRecently', 'conditionCastSpellRecently', 'conditionHitRecently',
 ])
 // Never applied on any fixture: Onslaught is situational (PoB grants it itself when a granting modifier's conditions
 // hold), an assumed Shock effect is inert or above what the build applies, and no fixture has a Frenzy/Endurance
@@ -30,6 +35,14 @@ const RULES = {
     notApplied: ['usePowerCharges'], suggested: ['usePowerCharges'],
   },
   'bare-spell': { why: 'max Power Charges 5 (base 3): applied', applied: ['usePowerCharges'] },
+  'monk-unconfigured': {
+    why: 'real app export, empty Config: 57% Shock/hit with 11 s duration and 28% Daze are ~100% uptime (applied); 8.5% non-crit and 0.46% Freeze buildup are not (suggested); Combo is the 8 Mantra of Destruction requires; HaveEnergyShield moves nothing (inert)',
+    applied: ['usePowerCharges', 'multiplierRage', 'multiplierCombo', 'conditionCritRecently', 'conditionEnemyShocked', 'conditionShockedEnemyRecently', 'conditionEnemyDazed'],
+    notApplied: ['conditionNonCritRecently', 'conditionHaveEnergyShield', 'conditionFrozenEnemyRecently', 'conditionEnemyFrozen', 'conditionEnemyIgnited'],
+    suggested: ['conditionNonCritRecently', 'conditionFrozenEnemyRecently'],
+    inert: ['conditionHaveEnergyShield'],
+    values: { multiplierCombo: 8 },
+  },
   'leech-consumer': { why: 'Leeches ... + "Damage while Leeching": the only fixture where leeching applies', applied: ['conditionLeeching'] },
   'leech-attack': { why: 'a leech source with no consumer: nothing to switch on', notApplied: LEECH },
   'attack': { why: 'no leech modifiers at all', notApplied: LEECH },
@@ -66,6 +79,10 @@ for (const [i, f] of manifest.entries()) {
     for (const k of r.notApplied ?? []) assert.ok(!applied.includes(k), `${k} must not be applied`)
     for (const k of r.suggested ?? []) assert.ok(suggested.includes(k), `${k} must be suggested`)
     for (const k of r.absent ?? []) assert.ok(!applied.includes(k) && !suggested.includes(k), `${k} must be neither applied nor suggested`)
+    for (const k of r.inert ?? []) assert.ok((a.inert ?? []).some((x) => x.key === k), `${k} must be dropped as inert`)
+    for (const [k, v] of Object.entries(r.values ?? {})) assert.equal(a.applied.find((x) => x.key === k)?.value, v, `${k} value`)
+    // Every applied key was measured leave-one-out and moves at least one of TotalDPS / FullDPS / TotalEHP.
+    for (const x of a.applied) assert.ok(x.error || Object.keys(x.contribution ?? {}).length > 0, `${x.key} has no measured contribution`)
     if (r.applied?.includes('usePowerCharges') && f.id === 'charges-base-max-skill-generator') {
       assert.match(a.applied.find((x) => x.key === 'usePowerCharges').source, /Profane Ritual/)
     }

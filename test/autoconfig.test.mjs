@@ -37,6 +37,11 @@ const TIER1 = new Set([
   'conditionNonCritRecently', 'conditionEnemyDazed', 'conditionEnemyShocked',
   'useFrenzyCharges', 'useEnduranceCharges', 'conditionLeeching', 'conditionLeechingLife',
   'conditionLeechingMana', 'conditionLeechingEnergyShield',
+  // Chance-based states, applied only at >= 90% modelled uptime; own actions while the main skill is used.
+  'conditionEnemyChilled', 'conditionEnemyIgnited', 'conditionEnemyBleeding', 'conditionEnemyPoisoned',
+  'conditionShockedEnemyRecently', 'conditionChilledEnemyRecently', 'conditionIgnitedEnemyRecently',
+  'conditionFrozenEnemyRecently', 'conditionStunnedEnemyRecently',
+  'conditionUsedSkillRecently', 'conditionAttackedRecently', 'conditionCastSpellRecently', 'conditionHitRecently',
 ])
 // Never applied: Onslaught is situational (PoB grants it itself when a granting modifier's conditions hold) and an
 // assumed Shock effect is either inert or above what the build applies.

@@ -7,14 +7,25 @@
 -- to show: mainEnv.conditionsUsed / enemyConditionsUsed / multipliersUsed / perStatsUsed (Modules/Calcs.lua:587-690)
 -- and the main skill's flags. "Generator" checks read computed output (PowerChargesMax, MaximumRage, DazeChance...).
 --
--- Policy: Tier 1 (generator and consumer both present) is applied. Tier 2 (situational: recent kills, been hit, boss
--- state, Onslaught, charges with no generator found) is only reported, with its isolated DPS/EHP delta when level == "suggest".
+-- Policy: Tier 1 (generator and consumer both present, and the state holds in steady combat) is applied; every applied
+-- input is then measured leave-one-out and dropped when it moves none of TotalDPS / FullDPS / TotalEHP. Tier 2
+-- (situational, or chance-based with low uptime) is only reported, with its isolated delta when level == "suggest".
+-- Chance-based states are judged by uptime against PoB's configured enemy (its threshold/boss setting): the chance
+-- per hit PoB computes for the main skill, its use rate (output.Speed, a lower bound: one hit per use) and the
+-- ailment's duration (or the 4 s of "Recently"). Uptime >= MIN_UPTIME is Tier 1.
+-- In "suggest" mode candidates also come from PoB's own Config definitions: every check option PoB shows because a modifier in the
+-- build is conditional on it (ifCond / ifEnemyCond / ifMinionCond / ifMult / ifFlag gates) is at least suggested,
+-- so the detection covers every class, ascendancy and minion build without a per-class list.
 -- An input the export already carries (input[k] ~= nil, true or false) is never touched.
 local M = {}
 
-local ASSUMED_COMBO = 10 -- no stat gives a realistic Combo count; same value as the reference setup
-local MIN_CRIT_FOR_RECENT = 25 -- % effective crit chance to treat "Crit Recently" as inherent
-local MAX_CRIT_FOR_NONCRIT = 95
+local FALLBACK_COMBO = 10 -- only when no skill states a required or maximum Combo count (then Tier 2)
+local MIN_UPTIME = 0.9 -- probability the state holds at a random moment of steady combat
+local RECENT = 4 -- seconds: PoE's "Recently"
+local DAZE_DURATION = 8 -- s (ConfigOptions.lua conditionEnemyDazed tooltip)
+local DEFAULT_AILMENT_DURATION = 4
+local INERT_PCT = 0.01 -- % change below which an applied input counts as doing nothing
+local MEASURE_STATS = { "TotalDPS", "FullDPS", "TotalEHP" }
 
 local function envOf()
 	return build.calcsTab and build.calcsTab.mainEnv
@@ -35,10 +46,33 @@ local function usedLike(env, needle)
 	return false
 end
 
+-- Lines of the build's sources: allocated passives, equipped items, socketed skills. fn(line, where) returns truthy
+-- to stop; that value is returned.
+local function scanLines(env, fn)
+	for _, node in pairs(build.spec and build.spec.allocNodes or {}) do
+		for _, l in ipairs(node.sd or {}) do local r = fn(l, "Passive " .. tostring(node.dn)) if r then return r end end
+	end
+	for slot, item in pairs(env.player.itemList or {}) do
+		if type(item) == "table" then
+			for _, list in ipairs({ "explicitModLines", "implicitModLines", "enchantModLines", "runeModLines" }) do
+				for _, ml in ipairs(item[list] or {}) do local r = fn(ml.line, slot) if r then return r end end
+			end
+		end
+	end
+	for _, skill in ipairs(env.player.activeSkillList or {}) do
+		for _, eff in ipairs(skill.effectList or {}) do
+			local ge = eff.grantedEffect
+			if ge then local r = fn(ge.description, "Skill " .. tostring(ge.name)) if r then return r end end
+		end
+	end
+	return nil
+end
+
 -- Charge generation. Every character has 3 maximum Power/Frenzy/Endurance charges (CalcSetup.lua:39 from
 -- Data/Misc.lua characterConstants), so "maximum > 0" says nothing. PoB doesn't model generation either ("gain a
 -- Power Charge on Critical Hit" parses to nothing), so the evidence is: a raised maximum, or a line on an allocated
--- passive, an equipped item or a socketed skill/support that grants the charge. Returns a reason or nil.
+-- passive, an equipped item or a socketed skill/support that grants the charge. Returns a reason or nil, and
+-- whether the source is only a random-type charge (a weaker, Tier 2 source).
 local function chargeGenerator(env, output, kind)
 	local base = data and data.characterConstants and data.characterConstants["max_" .. kind:lower() .. "_charges"] or 3
 	local max = output[kind .. "ChargesMax"] or 0
@@ -48,27 +82,20 @@ local function chargeGenerator(env, output, kind)
 	-- Charge" a trigger, neither a source.
 	local pats = { "gain an? " .. k .. " charge", "gains? %d+ " .. k .. " charges?", "grants? you an? " .. k .. " charge",
 		"grants? an? " .. k .. " charge", "grant you an? " .. k .. " charge" }
-	local function hit(line)
-		line = tostring(line or ""):lower():gsub("when you gain an? " .. k .. " charge", "")
-		for _, p in ipairs(pats) do if line:find(p) then return true end end
-		return false
+	local function norm(line)
+		return tostring(line or ""):lower():gsub("when you gain an? " .. k .. " charge", ""):gsub("when you gain an? charge", "")
 	end
-	for _, node in pairs(build.spec and build.spec.allocNodes or {}) do
-		for _, l in ipairs(node.sd or {}) do if hit(l) then return "Passive " .. tostring(node.dn) .. ": " .. l end end
-	end
-	for slot, item in pairs(env.player.itemList or {}) do
-		if type(item) == "table" then
-			for _, list in ipairs({ "explicitModLines", "implicitModLines", "enchantModLines", "runeModLines" }) do
-				for _, ml in ipairs(item[list] or {}) do if hit(ml.line) then return slot .. ": " .. ml.line end end
-			end
-		end
-	end
-	for _, skill in ipairs(env.player.activeSkillList or {}) do
-		for _, eff in ipairs(skill.effectList or {}) do
-			local ge = eff.grantedEffect
-			if ge and hit(ge.description) then return "Skill " .. tostring(ge.name) end
-		end
-	end
+	local r = scanLines(env, function(line, where)
+		local l = norm(line)
+		for _, p in ipairs(pats) do if l:find(p) then return where .. ": " .. line end end
+	end)
+	if r then return r, false end
+	-- "gain a Charge" / "gain a random Charge" (not "an additional ... Charge", which needs another source first).
+	r = scanLines(env, function(line, where)
+		local l = norm(line)
+		if (l:find("gain an? random charge") or l:find("gain an? charge")) and not l:find("additional") then return where .. ": " .. line end
+	end)
+	if r then return r, true end
 	return nil
 end
 
@@ -77,7 +104,49 @@ local function statsOf(env)
 	return ms and ms.skillModList, ms
 end
 
--- Run a frame the way groups_lib.select does. Returns an error string or nil.
+-- Skills Full DPS adds up (plus the main skill): where an ailment or state may come from besides the main skill.
+local function fullDpsSkills(env)
+	local list = {}
+	for _, s in ipairs(env.player.activeSkillList or {}) do
+		local sg = s.socketGroup
+		if s == env.player.mainSkill or (sg and sg.includeInFullDPS and sg.enabled ~= false) then list[#list + 1] = s end
+	end
+	return list
+end
+
+local function skillName(s)
+	return tostring(s.activeEffect and s.activeEffect.grantedEffect and s.activeEffect.grantedEffect.name or "?")
+end
+
+-- P(at least one success in n tries at chance p), p in 0..1.
+local function atLeastOnce(p, n)
+	if p <= 0 or n <= 0 then return 0 end
+	if p >= 1 then return 1 end
+	return 1 - (1 - p) ^ n
+end
+
+-- Combo the build's Combo skills ask for: the largest required count (active_skill_required_number_of_combo_stacks)
+-- or maximum (Multiplier:ComboStacksMax) among its active skills. nil when no skill states one.
+local function comboTarget(env)
+	local best, who
+	for _, s in ipairs(env.player.activeSkillList or {}) do
+		for _, eff in ipairs(s.effectList or {}) do
+			local ge = eff.grantedEffect
+			for _, set in pairs(ge and ge.statSets or {}) do
+				for _, st in ipairs(type(set) == "table" and set.constantStats or {}) do
+					if st[1] == "active_skill_required_number_of_combo_stacks" and tonumber(st[2]) and (not best or st[2] > best) then
+						best, who = tonumber(st[2]), "required by " .. tostring(ge.name)
+					end
+				end
+			end
+		end
+		local mx = s.skillModList and s.skillModList:Sum("BASE", s.skillCfg, "Multiplier:ComboStacksMax") or 0
+		if mx > 0 and (not best or mx > best) then best, who = mx, "maximum of " .. skillName(s) end
+	end
+	return best, who
+end
+
+-- Recalculate the main output the way groups_lib.select does. Returns an error string or nil.
 local function recalc(pob)
 	launch.promptMsg = nil
 	build.configTab:BuildModList()
@@ -95,28 +164,36 @@ local function out(k)
 	return type(v) == "number" and v == v and v or nil
 end
 
--- Tier 1 rules. Each returns nil (not applicable) or a list of { key, value, source }.
-local function tier1(env, output)
+-- Rules. Returns a list of { key, value, source, tier } (tier 1 = apply, 2 = report).
+local function rules(env, output)
 	local skillModList, mainSkill = statsOf(env)
 	local skillCfg = mainSkill and mainSkill.skillCfg -- weapon/skill-flag conditioned chances only count under the skill's cfg
-	local rules = {}
-	local function add(key, value, source)
-		rules[#rules + 1] = { key = key, value = value, source = source, tier = 1 }
+	local flags = mainSkill and mainSkill.skillFlags or {}
+	local cu, eu = env.conditionsUsed, env.enemyConditionsUsed
+	local speed = output.Speed or 0
+	local res = {}
+	local function add(tier, key, value, source)
+		res[#res + 1] = { key = key, value = value, source = source, tier = tier }
+	end
+	local function byUptime(key, uptime, source)
+		add(uptime >= MIN_UPTIME and 1 or 2, key, true, string.format("%s; uptime %.0f%%", source, uptime * 100))
 	end
 
-	-- Power / Frenzy / Endurance charges: something scales with them (consumer) and something generates them
-	-- (chargeGenerator). A consumer without a generator is only suggested (Tier 2, see tier2()).
+	-- Charges: something scales with them (consumer) and something generates them.
 	for _, kind in ipairs({ "Power", "Frenzy", "Endurance" }) do
 		if usedLike(env, kind .. "Charge") then
-			local gen = chargeGenerator(env, output, kind)
-			if gen then
-				add("use" .. kind .. "Charges", true, gen .. "; modifiers scale with them")
+			local gen, randomOnly = chargeGenerator(env, output, kind)
+			if gen and not randomOnly then
+				add(1, "use" .. kind .. "Charges", true, gen .. "; modifiers scale with them")
+			elseif gen then
+				add(2, "use" .. kind .. "Charges", true, "Only a random-type Charge source: " .. gen)
+			else
+				add(2, "use" .. kind .. "Charges", true, "Modifiers scale with " .. kind .. " Charges, but nothing found that generates them")
 			end
 		end
 	end
 
-	-- Leeching: the main skill leeches (damage as Life/Mana/ES) and a modifier is conditional on leeching. The leech
-	-- type decides which of PoB's conditions is set; each of them also implies plain Leeching.
+	-- Leeching: the main skill leeches and a modifier is conditional on leeching.
 	if skillModList then
 		local function leech(kind)
 			local names = {}
@@ -127,95 +204,167 @@ local function tier1(env, output)
 		for _, k in ipairs({ { "Life", "conditionLeechingLife", "LeechingLife" }, { "Mana", "conditionLeechingMana", "LeechingMana" }, { "EnergyShield", "conditionLeechingEnergyShield", "LeechingEnergyShield" } }) do
 			if leech(k[1]) then
 				any = true
-				if used(env.conditionsUsed, k[3]) then add(k[2], true, "Main skill leeches " .. k[1] .. " and modifiers need you to be leeching it") end
+				if used(cu, k[3]) then add(1, k[2], true, "Main skill leeches " .. k[1] .. " and modifiers need you to be leeching it") end
 			end
 		end
-		if any and used(env.conditionsUsed, "Leeching") then add("conditionLeeching", true, "Main skill leeches and modifiers need you to be leeching") end
+		if any and used(cu, "Leeching") then add(1, "conditionLeeching", true, "Main skill leeches and modifiers need you to be leeching") end
 	end
 
-	-- Rage: PoB only evaluates Rage when the build can gain it (CalcPerform.lua:777); inherent More Attack Damage.
+	-- Rage: PoB only evaluates Rage when the build can gain it (CalcPerform.lua:777); at maximum (measured below).
 	if output.MaximumRage and output.MaximumRage > 0 then
-		add("multiplierRage", output.MaximumRage, "Build can gain Rage (Condition:CanGainRage / RageRegen), maximum " .. output.MaximumRage)
+		add(1, "multiplierRage", output.MaximumRage, "Build can gain Rage, maximum " .. output.MaximumRage)
 	end
 
-	-- Combo: only when something queries Multiplier:ComboStacks (the option's own ifMult gate).
+	-- Combo: only when something queries Multiplier:ComboStacks (the option's own ifMult gate), at the count a skill asks for.
 	if used(env.multipliersUsed, "ComboStacks") then
-		add("multiplierCombo", ASSUMED_COMBO, "A skill or modifier uses Combo stacks (assumed " .. ASSUMED_COMBO .. ")")
+		local n, who = comboTarget(env)
+		if n then add(1, "multiplierCombo", n, "Combo " .. n .. " (" .. who .. ")")
+		else add(2, "multiplierCombo", FALLBACK_COMBO, "A modifier uses Combo but no skill states a count (assumed " .. FALLBACK_COMBO .. ")") end
 	end
 
-	if used(env.conditionsUsed, "HaveEnergyShield") and (output.EnergyShield or 0) > 0 then
-		add("conditionHaveEnergyShield", true, "Energy Shield " .. math.floor(output.EnergyShield) .. " and modifiers conditional on it")
+	if used(cu, "HaveEnergyShield") and (output.EnergyShield or 0) > 0 then
+		add(1, "conditionHaveEnergyShield", true, "Energy Shield " .. math.floor(output.EnergyShield) .. " and modifiers conditional on it")
 	end
 
-	-- Recent crits: crit chance of the main skill decides which of the two is the steady state.
+	-- Recent crits / non-crits: at least one in the last 4 s of the main skill's hits.
 	local crit = output.CritChance
 	if crit then
-		if used(env.conditionsUsed, "CritRecently") and crit >= MIN_CRIT_FOR_RECENT then
-			add("conditionCritRecently", true, string.format("Main skill crit chance %.1f%%", crit))
+		local n = speed * RECENT
+		if used(cu, "CritRecently") then
+			byUptime("conditionCritRecently", atLeastOnce(crit / 100, n), string.format("Crit chance %.1f%% at %.2f uses/s", crit, speed))
 		end
-		if used(env.conditionsUsed, "NonCritRecently") and crit < MAX_CRIT_FOR_NONCRIT then
-			add("conditionNonCritRecently", true, string.format("Main skill crit chance %.1f%% (non-crits happen)", crit))
+		if used(cu, "NonCritRecently") then
+			byUptime("conditionNonCritRecently", atLeastOnce(1 - crit / 100, n), string.format("Non-crit chance %.1f%% at %.2f uses/s", 100 - crit, speed))
 		end
 	end
 
-	-- Enemy ailments: a chance source on the main skill and a modifier that cares.
-	if skillModList then
-		if used(env.enemyConditionsUsed, "Dazed") and skillModList:Sum("BASE", skillCfg, "DazeChance") > 0 then
-			add("conditionEnemyDazed", true, "Main skill has a chance to Daze")
-		end
-		local shockChance = (output.ShockChance or 0) > 0 or skillModList:Sum("BASE", skillCfg, "EnemyShockChance") > 0
-		-- No assumed Shock effect: with the enemy Shocked, PoB applies the build's own computed Shock and only takes
-		-- conditionShockEffect when it is stronger (ConfigOptions.lua:1838), so an assumed value is either inert or an
-		-- inflation.
-		if used(env.enemyConditionsUsed, "Shocked") and shockChance then
-			add("conditionEnemyShocked", true, "Main skill can Shock and modifiers apply against Shocked enemies (PoB's own Shock effect)")
+	-- Your own actions: steady state while the main skill is used.
+	if mainSkill then
+		if used(cu, "UsedSkillRecently") then add(1, "conditionUsedSkillRecently", true, "Main skill " .. skillName(mainSkill) .. " is used") end
+		if used(cu, "AttackedRecently") and flags.attack then add(1, "conditionAttackedRecently", true, "Main skill is an Attack") end
+		if used(cu, "CastSpellRecently") and flags.spell then add(1, "conditionCastSpellRecently", true, "Main skill is a Spell") end
+		if used(cu, "HitRecently") and flags.hit and (output.HitChance or 0) > 0 then add(1, "conditionHitRecently", true, "Main skill hits") end
+	end
+
+	-- Enemy ailments and states from the main skill's per-hit chance and the ailment's duration. When the main skill
+	-- can't inflict it, a Full DPS skill that can only makes it a suggestion (its rate isn't known here).
+	local function otherSource(ailment, chanceMods)
+		for _, s in ipairs(fullDpsSkills(env)) do
+			if s ~= mainSkill and s.skillModList and not s.skillModList:Flag(s.skillCfg, "Cannot" .. ailment) then
+				if s.skillModList:Sum("BASE", s.skillCfg, table.unpack(chanceMods)) > 0 then return skillName(s) end
+			end
 		end
 	end
-	return rules
+	local cannot = function(a) return skillModList and skillModList:Flag(skillCfg, "Cannot" .. a) end
+	local ailments = {
+		-- name, enemy condition, config key, "recently" condition + key, per-hit chance (0..100), duration
+		{ "Shock", "Shocked", "conditionEnemyShocked", "ShockedEnemyRecently", "conditionShockedEnemyRecently", output.ShockChancePerHit or output.ShockChance, output.ShockDuration },
+		{ "Chill", "Chilled", "conditionEnemyChilled", "ChilledEnemyRecently", "conditionChilledEnemyRecently", output.ChillChanceOnHit, output.ChillDuration },
+		{ "Ignite", "Ignited", "conditionEnemyIgnited", "IgnitedEnemyRecently", "conditionIgnitedEnemyRecently", output.IgniteChancePerHit or output.IgniteChance, output.IgniteDuration },
+		{ "Bleed", "Bleeding", "conditionEnemyBleeding", nil, nil, output.BleedChancePerHit or output.BleedChance, output.BleedDuration },
+		{ "Poison", "Poisoned", "conditionEnemyPoisoned", nil, nil, output.PoisonChancePerHit or output.PoisonChance, output.PoisonDuration },
+	}
+	if skillModList then
+		ailments[#ailments + 1] = { "Daze", "Dazed", "conditionEnemyDazed", nil, nil,
+			math.min(100, skillModList:Sum("BASE", skillCfg, "DazeChance")), DAZE_DURATION }
+	end
+	for _, a in ipairs(ailments) do
+		local name, cond, key, rcond, rkey, chance, dur = a[1], a[2], a[3], a[4], a[5], tonumber(a[6]) or 0, tonumber(a[7]) or DEFAULT_AILMENT_DURATION
+		local wantState, wantRecent = used(eu, cond), rcond and used(cu, rcond)
+		if wantState or wantRecent then
+			if chance > 0 and not cannot(name) then
+				local src = string.format("%s: %.1f%% %s chance per hit at %.2f uses/s", skillName(mainSkill), chance, name, speed)
+				if wantState then byUptime(key, atLeastOnce(chance / 100, speed * dur), src .. string.format(", %.1f s duration", dur)) end
+				if wantRecent then byUptime(rkey, atLeastOnce(chance / 100, speed * RECENT), src) end
+			else
+				local other = otherSource(name, { "Enemy" .. name .. "Chance", name .. "Chance" })
+				local why = other and ("Only " .. other .. " in Full DPS can inflict " .. name .. "; the main skill can't")
+				if why then
+					if wantState then add(2, key, true, why) end
+					if wantRecent then add(2, rkey, true, why) end
+				end
+			end
+		end
+	end
+
+	-- Buildup states (Freeze, Electrocute, Heavy Stun): time to fill the enemy's bar at the main skill's average
+	-- buildup per hit. The state itself is never assumed (bosses gain buildup resistance); "Recently" is Tier 1 when
+	-- the bar fills within 4 s.
+	for _, b in ipairs({
+		{ "Freeze", "Frozen", "conditionEnemyFrozen", "FrozenEnemyRecently", "conditionFrozenEnemyRecently", output.FreezeBuildupAvg },
+		{ "Electrocute", "Electrocuted", "conditionEnemyElectrocuted", nil, nil, output.ElectrocuteBuildupAvg },
+		{ "Heavy Stun", "HeavyStunned", "conditionEnemyHeavyStunned", "StunnedEnemyRecently", "conditionStunnedEnemyRecently", output.HeavyStunBuildupAvg },
+	}) do
+		local name, cond, key, rcond, rkey, buildup = b[1], b[2], b[3], b[4], b[5], tonumber(b[6]) or 0
+		local t = (buildup > 0 and speed > 0) and 100 / (buildup * speed) or math.huge
+		local src = buildup > 0 and string.format("%s builds %.2f%% %s per hit: about %.0f s to fill", skillName(mainSkill), buildup, name, t) or ("Main skill builds no " .. name)
+		if used(eu, cond) and buildup > 0 then add(2, key, true, src) end
+		if rcond and used(cu, rcond) and buildup > 0 then add(t <= RECENT and 1 or 2, rkey, true, src) end
+	end
+
+	-- Situational, always Tier 2.
+	if used(cu, "BeenHitRecently") then add(2, "conditionBeenHitRecently", true, "Modifiers conditional on being hit recently") end
+	if used(cu, "CritInPast8Sec") then add(2, "conditionCritInPast8Sec", true, "Modifiers conditional on a crit in the past 8s") end
+	if used(cu, "KilledRecently") then add(2, "conditionKilledRecently", true, "Needs kills (none on a single boss)") end
+	if used(cu, "KilledShockedLast3Seconds") then add(2, "conditionKilledShockedLast3Seconds", true, "Needs a Shocked kill every 3s (adds)") end
+	-- Onslaught: PoB already grants it when a granting modifier's own conditions hold (CalcPerform.lua:614).
+	if used(cu, "Onslaught") and not env.player.modDB:Flag(nil, "Onslaught") then
+		add(2, "buffOnslaught", true, "Modifiers need Onslaught; the toggle also adds the buff itself")
+	end
+	return res
 end
 
--- Tier 2: reported only. { key, value, why } if the build has a consumer for it.
-local function tier2(env, output)
-	local c = {}
-	local function add(key, value, why) c[#c + 1] = { key = key, value = value, source = why, tier = 2 } end
-	local cu, eu = env.conditionsUsed, env.enemyConditionsUsed
-	if used(cu, "BeenHitRecently") then add("conditionBeenHitRecently", true, "Modifiers conditional on being hit recently") end
-	if used(cu, "CritInPast8Sec") then add("conditionCritInPast8Sec", true, "Modifiers conditional on a crit in the past 8s") end
-	if used(cu, "KilledShockedLast3Seconds") then add("conditionKilledShockedLast3Seconds", true, "Needs a Shocked kill every 3s (adds)") end
-	if used(cu, "FrozenEnemyRecently") then add("conditionFrozenEnemyRecently", true, "Needs a freeze (bosses resist)") end
-	if used(cu, "ChilledEnemyRecently") then add("conditionChilledEnemyRecently", true, "Modifiers conditional on chilling recently") end
-	if used(cu, "ShockedEnemyRecently") then add("conditionShockedEnemyRecently", true, "Modifiers conditional on shocking recently") end
-	if used(eu, "Chilled") then add("conditionEnemyChilled", true, "Modifiers against Chilled enemies") end
-	-- Charges with a consumer but no generator found (Tier 1 takes the ones with one).
-	for _, kind in ipairs({ "Power", "Frenzy", "Endurance" }) do
-		if usedLike(env, kind .. "Charge") and not chargeGenerator(env, output, kind) then
-			add("use" .. kind .. "Charges", true, "Modifiers scale with " .. kind .. " Charges, but nothing found that generates them")
+-- Never applied or suggested by the generic pass: an assumed Shock effect is either inert or above what the build
+-- applies, and these are calculation modes, not combat state.
+local NEVER = { conditionShockEffect = true, DisableEHPGainOnBlock = true, EVBypass = true, ignoreItemDisablers = true, ignoreJewelLimits = true }
+local GATES = { "ifCond", "ifEnemyCond", "ifMinionCond", "ifMult", "ifFlag", "ifEnemyMult", "ifMinionFlag" }
+
+-- Generic pass: every check option PoB shows because a modifier in this build depends on it. Covers class- and
+-- skill-specific state (minion conditions, ascendancy buffs, skill toggles) the rules above don't name.
+local function discovered(seen)
+	local res = {}
+	local ct = build.configTab
+	local ok, varList = pcall(LoadModule, "Modules/ConfigOptions")
+	if not ok or type(varList) ~= "table" then return res end
+	local showAll = ct.toggleConfigs
+	ct.toggleConfigs = false
+	for _, v in ipairs(varList) do
+		local key = v.var
+		local ctl = key and ct.varControls[key]
+		if key and ctl and v.type == "check" and not seen[key] and not NEVER[key] then
+			local gated = false
+			for _, g in ipairs(GATES) do if v[g] then gated = true break end end
+			if gated then
+				local sok, shown = pcall(function() return type(ctl.shown) == "function" and ctl.shown() or ctl.shown end)
+				if sok and shown then
+					local label = tostring(v.label or key):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", "")
+					res[#res + 1] = { key = key, value = true, tier = 2, source = "A modifier in the build depends on it (" .. label .. ")" }
+				end
+			end
 		end
 	end
-	-- Onslaught: PoB already grants it when a granting modifier's own conditions hold (CalcPerform.lua:614), so the
-	-- toggle only asserts conditions (on kill, on hit at max Frenzy...) that PoB can't see: situational.
-	if used(cu, "Onslaught") and not env.player.modDB:Flag(nil, "Onslaught") then
-		add("buffOnslaught", true, "Modifiers need Onslaught; the toggle also adds the buff itself")
-	end
-	return c
+	ct.toggleConfigs = showAll
+	return res
 end
 
 -- Detect against the currently loaded, calculated build.
 -- Returns { apply = {rule...}, suggest = {rule...} } with already-configured inputs removed.
-function M.detect()
+function M.detect(generic)
 	local env = envOf()
 	if not (env and env.player and env.player.modDB and build.configTab) then
 		return { apply = {}, suggest = {} }
 	end
 	local output = build.calcsTab.mainOutput or {}
 	local input = build.configTab.input
-	local function unset(r) return input[r.key] == nil end
 	local res = { apply = {}, suggest = {} }
-	for _, r in ipairs(tier1(env, output)) do
-		if unset(r) then res.apply[#res.apply + 1] = r end
-	end
-	for _, r in ipairs(tier2(env, output)) do
-		if unset(r) then res.suggest[#res.suggest + 1] = r end
+	local seen = {}
+	local all = rules(env, output)
+	for _, r in ipairs(all) do seen[r.key] = true end
+	if generic then for _, r in ipairs(discovered(seen)) do all[#all + 1] = r end end
+	for _, r in ipairs(all) do
+		if input[r.key] == nil then
+			if r.tier == 1 then res.apply[#res.apply + 1] = r else res.suggest[#res.suggest + 1] = r end
+		end
 	end
 	return res
 end
@@ -464,13 +613,15 @@ function M.run(pob, level, overrides, opts)
 			manual = {}
 		end
 	end
-	local det = level and M.detect() or { apply = {}, suggest = {} }
+	local det = level and M.detect(wantDeltas) or { apply = {}, suggest = {} }
 	local result = {
 		baselineDPS = out("TotalDPS"), configuredDPS = out("TotalDPS"),
 		baselineEHP = out("TotalEHP"), configuredEHP = out("TotalEHP"),
 		applied = {}, suggested = {},
 	}
 	local input = build.configTab.input
+	local baseFull = out("FullDPS")
+	result.baselineFullDPS, result.configuredFullDPS = baseFull, baseFull
 	if #det.apply > 0 then
 		for _, r in ipairs(det.apply) do input[r.key] = r.value end
 		local err = recalc(pob)
@@ -481,11 +632,37 @@ function M.run(pob, level, overrides, opts)
 			result.error = err
 			return result
 		end
+		-- Leave-one-out: each applied input's contribution on top of the others. One that moves none of TotalDPS /
+		-- FullDPS / TotalEHP is taken back out (reported in `inert`): the build has a consumer for it on paper only.
+		local full = {}
+		for _, k in ipairs(MEASURE_STATS) do full[k] = out(k) end
+		local kept = {}
+		result.inert = {}
+		for _, r in ipairs(det.apply) do
+			input[r.key] = nil
+			local e = recalc(pob)
+			local entry = { key = r.key, value = r.value, source = r.source, tier = 1 }
+			local moved = e ~= nil -- a failed trial is kept (not proof of "no change") and shown
+			if e then entry.error = e else
+				entry.contribution = {}
+				for _, k in ipairs(MEASURE_STATS) do
+					local a, b = out(k), full[k]
+					if a and b then
+						local pct = a ~= 0 and (b / a - 1) * 100 or (b ~= 0 and math.huge or 0)
+						if math.abs(pct) >= INERT_PCT then moved = true; entry.contribution[k] = round(pct) end
+					end
+				end
+				entry.contribution = pob.object(entry.contribution)
+			end
+			input[r.key] = r.value
+			if moved then kept[#kept + 1] = entry else result.inert[#result.inert + 1] = entry; input[r.key] = nil end
+		end
+		local err2 = recalc(pob)
+		if err2 then result.error = err2 end
 		result.configuredDPS = out("TotalDPS")
 		result.configuredEHP = out("TotalEHP")
-		for _, r in ipairs(det.apply) do
-			result.applied[#result.applied + 1] = { key = r.key, value = r.value, source = r.source, tier = 1 }
-		end
+		result.baselineFullDPS, result.configuredFullDPS = baseFull, out("FullDPS")
+		result.applied = kept
 	end
 	local baseDPS, baseEHP = result.configuredDPS, result.configuredEHP
 	for _, r in ipairs(det.suggest) do
@@ -501,8 +678,10 @@ function M.run(pob, level, overrides, opts)
 			input[r.key] = nil
 		end
 		-- With deltas, a toggle that changes neither DPS nor EHP is noise.
+		-- With deltas, a toggle that changes neither DPS nor EHP is noise, and one that only lowers them is a debuff on
+		-- you (Are you Frozen? / on Low Life?), not a state worth enabling.
 		local measured = wantDeltas and s.dpsDelta ~= nil
-		if not measured or s.dpsDelta ~= 0 or (s.ehpDelta or 0) ~= 0 then
+		if not measured or s.dpsDelta > 0 or (s.ehpDelta or 0) > 0 then
 			result.suggested[#result.suggested + 1] = s
 		end
 	end
