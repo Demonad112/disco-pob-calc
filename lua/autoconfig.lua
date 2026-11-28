@@ -36,6 +36,18 @@ local function usedLike(env, needle)
 	return false
 end
 
+-- True when the modDB holds a modifier of one of these names from a real source (PoB's own "Base" / "Config" entries
+-- exist for every build and only gate on the condition, they don't grant anything).
+local function grantsFlag(modDB, ...)
+	for i = 1, select("#", ...) do
+		for _, m in ipairs(modDB.mods[select(i, ...)] or {}) do
+			local src = tostring(m.source or ""):match("^[^:]*")
+			if m.type == "FLAG" and m.value and src ~= "Base" and src ~= "Config" then return true end
+		end
+	end
+	return false
+end
+
 local function statsOf(env)
 	local ms = env.player and env.player.mainSkill
 	return ms and ms.skillModList, ms
@@ -72,6 +84,39 @@ local function tier1(env, output)
 	-- Power charges: a generator (maximum > 0) and something that scales with them.
 	if (output.PowerChargesMax or 0) > 0 and usedLike(env, "PowerCharge") then
 		add("usePowerCharges", true, "Maximum Power Charges " .. output.PowerChargesMax .. " and modifiers that scale with them")
+	end
+
+	-- Frenzy / Endurance charges: same shape as Power charges. (Endurance often follows Frenzy, so its maximum is read
+	-- from output too.)
+	if (output.FrenzyChargesMax or 0) > 0 and usedLike(env, "FrenzyCharge") then
+		add("useFrenzyCharges", true, "Maximum Frenzy Charges " .. output.FrenzyChargesMax .. " and modifiers that scale with them")
+	end
+	if (output.EnduranceChargesMax or 0) > 0 and usedLike(env, "EnduranceCharge") then
+		add("useEnduranceCharges", true, "Maximum Endurance Charges " .. output.EnduranceChargesMax .. " and modifiers that scale with them")
+	end
+
+	-- Onslaught: a modifier that grants it (not PoB's own Base/Config bookkeeping) and one that needs it. The option
+	-- also adds the buff itself (20% increased Attack, Cast and Movement Speed), which is the point of "you have it".
+	if used(env.conditionsUsed, "Onslaught") and grantsFlag(modDB, "Onslaught", "Condition:Onslaught") then
+		add("buffOnslaught", true, "A modifier grants Onslaught and others need it")
+	end
+
+	-- Leeching: the main skill leeches (damage as Life/Mana/ES) and a modifier is conditional on leeching. The leech
+	-- type decides which of PoB's conditions is set; each of them also implies plain Leeching.
+	if skillModList then
+		local function leech(kind)
+			local names = {}
+			for _, t in ipairs({ "", "Physical", "Fire", "Cold", "Lightning", "Chaos", "Elemental", "NonChaos" }) do names[#names + 1] = t .. "Damage" .. kind .. "Leech" end
+			return skillModList:Sum("BASE", skillCfg, table.unpack(names)) > 0
+		end
+		local any = false
+		for _, k in ipairs({ { "Life", "conditionLeechingLife", "LeechingLife" }, { "Mana", "conditionLeechingMana", "LeechingMana" }, { "EnergyShield", "conditionLeechingEnergyShield", "LeechingEnergyShield" } }) do
+			if leech(k[1]) then
+				any = true
+				if used(env.conditionsUsed, k[3]) then add(k[2], true, "Main skill leeches " .. k[1] .. " and modifiers need you to be leeching it") end
+			end
+		end
+		if any and used(env.conditionsUsed, "Leeching") then add("conditionLeeching", true, "Main skill leeches and modifiers need you to be leeching") end
 	end
 
 	-- Rage: PoB only evaluates Rage when the build can gain it (CalcPerform.lua:777); inherent More Attack Damage.
@@ -125,8 +170,6 @@ local function tier2(env, output)
 	if used(cu, "ChilledEnemyRecently") then add("conditionChilledEnemyRecently", true, "Modifiers conditional on chilling recently") end
 	if used(cu, "ShockedEnemyRecently") then add("conditionShockedEnemyRecently", true, "Modifiers conditional on shocking recently") end
 	if used(eu, "Chilled") then add("conditionEnemyChilled", true, "Modifiers against Chilled enemies") end
-	if (output.FrenzyChargesMax or 0) > 0 and usedLike(env, "FrenzyCharge") then add("useFrenzyCharges", true, "Frenzy Charges available (" .. output.FrenzyChargesMax .. ")") end
-	if (output.EnduranceChargesMax or 0) > 0 and usedLike(env, "EnduranceCharge") then add("useEnduranceCharges", true, "Endurance Charges available (" .. output.EnduranceChargesMax .. ")") end
 	return c
 end
 
@@ -156,12 +199,18 @@ end
 
 
 -- ---------------------------------------------------------------------------------------------------------------
--- Catalog: every Config option PoB would show for this build (control.shown(), plus anything the export set), each
--- with its measured effect. check: state off vs on. list: every alternative vs the selected one. count: +1 vs now
--- (per extra unit) and, when set, now vs 0. Effects are isolated (one change at a time on the configured build), so
--- they are inferred from PoB's own recalculation, not read from a tooltip.
+-- Catalog: every Config option PoB would show for this build (control.shown(), plus anything the export set). Each
+-- is listed with its value and state; its effect is measured when it is cheap to (see MAX_TRIALS) or on request
+-- (M.measure). Effects are isolated (one change at a time on the configured build), inferred from PoB's own
+-- recalculation, not read from a tooltip.
+--   check: the stat change of flipping it. list: every alternative vs the selected one. count: +1 vs now (per extra
+--   unit) and, when set, now vs 0; or, for the values the caller names, each of them vs now.
 local STATS = { "TotalDPS", "CombinedDPS", "TotalEHP", "PhysicalMaximumHitTaken", "FireMaximumHitTaken", "EvadeChance", "EffectiveBlockChance", "PhysicalDamageReduction" }
-local MAX_TRIALS = 60 -- each trial is a full PoB recalculation (~1 s native, more in WASM); unmeasured options are still listed
+-- Each trial is a full PoB recalculation (~0.4 s in WASM), so the first response measures only this many; everything
+-- else is listed and measured when the page asks (M.measure).
+local MAX_TRIALS = 12
+-- Measured before everything else: options that change the numbers for every build.
+local PRIORITY = { enemyIsBoss = true, enemyLevel = true }
 
 local function snap()
 	local t = {}
@@ -198,21 +247,77 @@ end
 
 local TYPES = { check = true, count = true, countAllowZero = true, integer = true, float = true, list = true }
 
--- applied: set of keys auto-config enabled. overrides: set of keys the caller set.
-function M.catalog(pob, applied, overrides, exported)
+local function entryType(v)
+	return v.type == "list" and "list" or (v.type == "check" and "check" or "count")
+end
+
+local function optionsOf(v, selected)
+	local opts = {}
+	for _, o in ipairs(v.list or {}) do opts[#opts + 1] = { val = o.val, label = clean(o.label), selected = o.val == selected } end
+	return opts
+end
+
+-- Measure option `v` into entry `e` (value, type, options already set) against `base`. At most `limit` trials in
+-- total on `budget`. values: for a count, the values to try instead of the +1 / vs-0 pair.
+local function measureEntry(pob, v, e, base, budget, limit, values)
+	local key = e.key
+	local before = budget.n
+	if v.type == "check" then
+		if budget.n >= limit then return end
+		local on = e.value == true
+		local s = trial(pob, key, not on, budget)
+		if s then e.effect = on and diff(pob, s, base) or diff(pob, base, s) end
+	elseif v.type == "list" then
+		for _, o in ipairs(e.options) do
+			if not o.selected and budget.n < limit then
+				local s = trial(pob, key, o.val, budget)
+				if s then o.vsSelected = diff(pob, base, s) end
+			end
+		end
+	elseif values then
+		e.trials = {}
+		for _, val in ipairs(values) do
+			if budget.n < limit and tonumber(val) then
+				local s = trial(pob, key, tonumber(val), budget)
+				if s then e.trials[#e.trials + 1] = { value = tonumber(val), vs = diff(pob, base, s) } end
+			end
+		end
+	else
+		if budget.n >= limit then return end
+		local n = tonumber(e.value) or 0
+		local s = trial(pob, key, n + 1, budget)
+		if s then e.perUnit = diff(pob, base, s) end
+		if n > 0 and budget.n < limit then
+			local s0 = trial(pob, key, 0, budget)
+			if s0 then e.total = diff(pob, s0, base) end
+		end
+	end
+	e.measured = budget.n > before -- nothing ran when the budget was already spent
+end
+
+local function hasEffect(e)
+	if e.effect and next(e.effect) then return true end
+	if e.perUnit and next(e.perUnit) then return true end
+	if e.total and next(e.total) then return true end
+	for _, o in ipairs(e.options or {}) do if o.vsSelected and next(o.vsSelected) then return true end end
+	return false
+end
+
+-- applied: set of keys auto-config enabled. overrides: set of keys the caller set. trials: measurement budget.
+-- Returns entries (every option shown, in PoB's order) and how many of them are not measured yet.
+function M.catalog(pob, applied, overrides, exported, trials)
 	local ct = build.configTab
 	local input = ct.input
 	local entries = {}
 	local budget = { n = 0 }
 	local ok, varList = pcall(LoadModule, "Modules/ConfigOptions")
-	if not ok or type(varList) ~= "table" then return entries end
+	if not ok or type(varList) ~= "table" then return entries, 0 end
 	local base = snap()
-	local unmeasured = 0
 	local sectionName
 	local showAll = ct.toggleConfigs
 	ct.toggleConfigs = false -- only options PoB would show for this build, not the 'show all' view
 	local cands = {}
-	for _, v in ipairs(varList) do
+	for idx, v in ipairs(varList) do
 		if v.section then sectionName = clean(v.section) end
 		local key = v.var
 		local ctl = key and ct.varControls[key]
@@ -225,71 +330,90 @@ function M.catalog(pob, applied, overrides, exported)
 				local value = cur
 				if value == nil then value = def end
 				local e = {
-					key = key, label = clean(v.label or key), section = sectionName,
-					type = v.type == "list" and "list" or (v.type == "check" and "check" or "count"),
-					value = value, default = def,
+					key = key, label = clean(v.label or key), section = sectionName, order = idx,
+					type = entryType(v), value = value, default = def,
 					state = overrides[key] and "manual" or applied[key] and "auto" or exported[key] and "export" or "available",
+					measured = false,
 				}
 				if v.tooltip then e.tooltip = clean(v.tooltip) end
-				cands[#cands + 1] = { e = e, v = v, cur = cur }
+				if v.type == "list" then e.options = optionsOf(v, value) end
+				cands[#cands + 1] = { e = e, v = v }
 			end
 		end
 	end
 	ct.toggleConfigs = showAll
-	-- Measure what the build already uses first, then toggles, lists, counts, until the trial budget is spent.
-	local rank = { manual = 0, auto = 0, export = 0, available = 1 }
+	-- Measure the priority options first, then what the build already uses, then toggles, lists, counts.
+	local rank = { manual = 1, auto = 1, export = 1, available = 2 }
 	local trank = { check = 0, list = 1, count = 2 }
-	table.sort(cands, function(a, b)
-		local ra, rb = rank[a.e.state] * 3 + trank[a.e.type], rank[b.e.state] * 3 + trank[b.e.type]
+	local function r(c) return (PRIORITY[c.e.key] and c.e.state == "available") and 0 or rank[c.e.state] end
+	local order = {}
+	for i, c in ipairs(cands) do order[i] = c end
+	table.sort(order, function(a, b)
+		local ra, rb = r(a) * 3 + trank[a.e.type], r(b) * 3 + trank[b.e.type]
 		if ra ~= rb then return ra < rb end
 		return a.e.key < b.e.key
 	end)
+	local limit = trials or MAX_TRIALS
+	for _, c in ipairs(order) do
+		if c.e.section ~= "Quest Rewards" then measureEntry(pob, c.v, c.e, base, budget, limit) end
+	end
+	local unmeasured = 0
 	for _, c in ipairs(cands) do
-		local e, v, cur, key = c.e, c.v, c.cur, c.e.key
-		if e.section == "Quest Rewards" then
-			e.measured = false -- one-off rewards, no per-build effect worth a recalculation
-		elseif budget.n >= MAX_TRIALS then
-			e.measured = false
-			unmeasured = unmeasured + 1
-		elseif v.type == "check" then
-			local on = cur == true
-			local s = trial(pob, key, not on, budget)
-			if s then e.effect = on and diff(pob, s, base) or diff(pob, base, s) end
-		elseif v.type == "list" then
-			e.options = {}
-			for _, o in ipairs(v.list or {}) do
-				local o_ = { val = o.val, label = clean(o.label), selected = o.val == e.value }
-				if not o_.selected and budget.n < MAX_TRIALS then
-					local s = trial(pob, key, o.val, budget)
-					if s then o_.vsSelected = diff(pob, base, s) end
-				end
-				e.options[#e.options + 1] = o_
-			end
-		else
-			local n = tonumber(cur) or 0
-			local s = trial(pob, key, n + 1, budget)
-			if s then e.perUnit = diff(pob, base, s) end
-			if n > 0 and budget.n < MAX_TRIALS then
-				local s0 = trial(pob, key, 0, budget)
-				if s0 then e.total = diff(pob, s0, base) end
-			end
-		end
-		local has = e.effect or e.perUnit or e.total
-		local hasOpt = false
-		for _, o in ipairs(e.options or {}) do if o.vsSelected and next(o.vsSelected) then hasOpt = true end end
-		-- Hide unset options that measurably change nothing; keep anything set and anything not measured.
-		if e.measured ~= false and (has and next(has)) or hasOpt or e.state ~= "available" then
-			entries[#entries + 1] = e
-		end
+		local e = c.e
+		if not e.measured then unmeasured = unmeasured + 1 end
+		-- Hide unset options that were measured and change nothing; keep anything set and anything not measured yet.
+		if not e.measured or e.state ~= "available" or hasEffect(e) then entries[#entries + 1] = e end
 	end
 	recalc(pob) -- leave the build as configured
 	return entries, unmeasured
 end
 
--- Apply Tier 1 and recalculate. level: "apply" (default) or "suggest" (also compute each Tier 2 delta).
+-- Measure on request against the build as it is now. specs: { { key, values? } ... }. Returns entries with the same
+-- measure fields as the catalog's (effect | options[].vsSelected | perUnit/total | trials), measured = true.
+function M.measure(pob, specs)
+	local ct = build.configTab
+	local ok, varList = pcall(LoadModule, "Modules/ConfigOptions")
+	if not ok or type(varList) ~= "table" then return {} end
+	local byKey = {}
+	for _, v in ipairs(varList) do if v.var then byKey[v.var] = v end end
+	local base = snap()
+	local budget = { n = 0 }
+	local res = {}
+	for _, sp in ipairs(specs or {}) do
+		local v = byKey[sp.key]
+		if v and TYPES[v.type] and ct.varControls[sp.key] then
+			local cur = ct.input[sp.key]
+			local value = cur
+			if value == nil then value = ct:GetDefaultState(sp.key, type(cur)) end
+			local e = { key = sp.key, type = entryType(v), value = value, measured = false }
+			if v.type == "list" then e.options = optionsOf(v, value) end
+			measureEntry(pob, v, e, base, budget, math.huge, sp.values)
+			res[#res + 1] = e
+		end
+	end
+	recalc(pob) -- the last trial left its value in the calculation
+	return res
+end
+
+-- Put the Config inputs back to `saved` (a shallow copy taken right after the load) and recalculate, so a new set of
+-- overrides starts from the export as it was and auto-config sees the build's own state again.
+function M.reset(pob, saved)
+	local input = build.configTab.input
+	for k in pairs(input) do input[k] = nil end
+	for k, v in pairs(saved) do input[k] = v end
+	return recalc(pob)
+end
+
+-- Apply Tier 1 and recalculate. level: "apply" (default) or "suggest" (also compute each Tier 2 delta and the
+-- catalog). opts: { trials = n, catalog = bool, deltas = bool } override what "suggest" implies.
 -- Returns a plain table (use pob.object on the way out): { baselineDPS, configuredDPS, applied, suggested, error }.
-function M.run(pob, level, overrides)
+function M.run(pob, level, overrides, opts)
 	overrides = overrides or {}
+	opts = opts or {}
+	local wantDeltas = opts.deltas
+	if wantDeltas == nil then wantDeltas = level == "suggest" end
+	local wantCatalog = opts.catalog
+	if wantCatalog == nil then wantCatalog = level == "suggest" end
 	local ct = build.configTab
 	local exported = {}
 	for k, v in pairs(ct.input) do
@@ -333,7 +457,7 @@ function M.run(pob, level, overrides)
 	local baseDPS, baseEHP = result.configuredDPS, result.configuredEHP
 	for _, r in ipairs(det.suggest) do
 		local s = { key = r.key, value = r.value, source = r.source, tier = 2 }
-		if level == "suggest" and baseDPS then
+		if wantDeltas and baseDPS then
 			input[r.key] = r.value
 			if not recalc(pob) then
 				local dps, ehp = out("TotalDPS"), out("TotalEHP")
@@ -343,17 +467,17 @@ function M.run(pob, level, overrides)
 			end
 			input[r.key] = nil
 		end
-		-- In suggest mode a toggle that changes neither DPS nor EHP is noise.
-		local measured = level == "suggest" and s.dpsDelta ~= nil
+		-- With deltas, a toggle that changes neither DPS nor EHP is noise.
+		local measured = wantDeltas and s.dpsDelta ~= nil
 		if not measured or s.dpsDelta ~= 0 or (s.ehpDelta or 0) ~= 0 then
 			result.suggested[#result.suggested + 1] = s
 		end
 	end
-	if level == "suggest" and #det.suggest > 0 then recalc(pob) end -- leave the build as configured by Tier 1
-	if level == "suggest" then
+	if wantDeltas and #det.suggest > 0 then recalc(pob) end -- leave the build as configured by Tier 1
+	if wantCatalog then
 		local applied = {}
 		for _, a in ipairs(result.applied) do applied[a.key] = true end
-		local ok, cat, unmeasured = pcall(M.catalog, pob, applied, manual, exported)
+		local ok, cat, unmeasured = pcall(M.catalog, pob, applied, manual, exported, opts.trials)
 		if ok then result.catalog = cat; result.unmeasured = unmeasured else result.catalogError = pob.strip(tostring(cat)); recalc(pob) end
 	end
 	return result

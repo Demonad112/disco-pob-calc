@@ -1,7 +1,9 @@
 // Module worker that owns the engine: one PoB2 instance, one build at a time (pob-calc.js serialises calls).
 //
 // Messages in:  { id, type: 'init', baseUrl }            -> { id, ok, info }
-//               { id, type: 'calc', code, groups }       -> { id, ok, result } | { id, ok: false, error, kind }
+//               { id, type: 'calc', code, groups, autoConfig, overrides } -> { id, ok, result } | { id, ok: false, error, kind }
+//               { id, type: 'setConfig', autoConfig, overrides, ... }    -> { id, ok, result }   (the build the last calc loaded)
+//               { id, type: 'measure', specs }                           -> { id, ok, result: { measured, ms } }
 // Messages out: { type: 'progress', phase, loaded, total } while downloading / unpacking.
 // A wasm abort (OOM, trap) is reported with kind 'fatal'; pob-calc.js then replaces this worker.
 import { decodePobCode, DecodeError, treeVersionsOf } from './decode.mjs'
@@ -174,6 +176,32 @@ async function calc(code, groups, autoConfig, overrides) {
   }
 }
 
+// Same result shape as calc(), without decode/tree timings: the build stays loaded in the engine.
+function setConfig(opts) {
+  const t0 = performance.now()
+  const r = engine.setConfig(opts)
+  const ms = performance.now() - t0
+  if (r.error) throw Object.assign(new Error(r.error), { kind: 'engine' })
+  return {
+    pobVersion: info.pobVersion,
+    pinCommit: info.pinCommit,
+    snapshot: r.snapshot,
+    mainSkill: r.mainSkill,
+    groups: null,
+    autoConfig: r.autoConfig ?? null,
+    ms: Math.round(ms),
+    cached: false,
+    timings: { engineMs: ms, totalMs: ms, engine: r.timings },
+    wasmHeapBytes: engine.heapBytes(),
+  }
+}
+
+function measure(specs) {
+  const r = engine.measure(specs)
+  if (r.error) throw Object.assign(new Error(r.error), { kind: 'engine' })
+  return r
+}
+
 self.onmessage = async ({ data }) => {
   const { id, type } = data
   try {
@@ -182,6 +210,12 @@ self.onmessage = async ({ data }) => {
     } else if (type === 'calc') {
       if (!info) throw Object.assign(new Error('call init() first'), { kind: 'usage' })
       postMessage({ id, ok: true, result: await calc(data.code, !!data.groups, data.autoConfig || false, data.overrides || null) })
+    } else if (type === 'setConfig') {
+      if (!info) throw Object.assign(new Error('call init() first'), { kind: 'usage' })
+      postMessage({ id, ok: true, result: setConfig({ autoConfig: data.autoConfig || false, overrides: data.overrides || null, trials: data.trials, catalog: data.catalog, deltas: data.deltas }) })
+    } else if (type === 'measure') {
+      if (!info) throw Object.assign(new Error('call init() first'), { kind: 'usage' })
+      postMessage({ id, ok: true, result: measure(data.specs || []) })
     } else {
       throw Object.assign(new Error(`unknown message ${type}`), { kind: 'usage' })
     }

@@ -1,5 +1,5 @@
 // Demo page for pob-calc.js: paste a code, see PoB's numbers and how long each step took.
-import { calc, init } from './pob-calc.js'
+import { calc, init, measure, setConfig } from './pob-calc.js'
 
 const $ = (id) => document.getElementById(id)
 const codeEl = $('code')
@@ -82,6 +82,33 @@ async function boot() {
 let calcCount = 0
 let overrides = {} // Config inputs the user set on the page; sent with every recalculation of the same code
 let lastCode = ''
+let loaded = null // { code, auto } while the worker still holds the build of the last full calc: Config changes then skip the reload
+let busy = false // a calc or Config change is running
+let dirty = false // a control changed meanwhile
+let gen = 0 // bumps on every Config change; background measurements of an older Config are dropped
+let pendingMeasure = 0
+window.__pobPending = 0
+
+function rerun() {
+  if (calcBtn.disabled && !busy) return // engine not started yet
+  if (busy) {
+    dirty = true
+    return
+  }
+  const code = codeEl.value.trim()
+  if (loaded && loaded.code === code && loaded.auto === $('autocfg').checked && !$('groups').checked) reconfig()
+  else run()
+}
+
+function afterRun() {
+  busy = false
+  calcBtn.disabled = false
+  if (dirty) {
+    dirty = false
+    rerun()
+  }
+}
+
 async function run() {
   const code = codeEl.value.trim()
   if (!code) {
@@ -90,12 +117,17 @@ async function run() {
   }
   const groups = $('groups').checked
   const autoConfig = $('autocfg').checked ? 'suggest' : false
+  busy = true
+  dirty = false
+  loaded = null
+  gen++
   calcBtn.disabled = true
   setStatus(groups ? 'Calculating every skill group… this takes a while.' : 'Calculating…')
   const t0 = performance.now()
   try {
     const r = await calc(code, { groups, autoConfig, overrides: lastCode === code ? overrides : (overrides = {}) })
     lastCode = code
+    if (!groups) loaded = { code, auto: !!autoConfig }
     const wall = performance.now() - t0
     calcCount++
     const label = calcCount === 1 ? 'First calc' : 'Last calc'
@@ -105,11 +137,38 @@ async function run() {
     setTiming('Memory now', mb(r.wasmHeapBytes), `Lua heap after GC ${mb(e.luaHeapBytes)}`)
     render(r)
     setStatus(r.snapshot.loadError ? `PoB reported: ${r.snapshot.loadError}` : `Done in ${ms(wall)}.`, !!r.snapshot.loadError)
-    window.__pobLast = { result: r, wallMs: wall }
+    window.__pobLast = { result: r, wallMs: wall, kind: 'calc' }
   } catch (e) {
     setStatus(e.kind === 'decode' ? e.message : `PoB could not calculate this build: ${e.message}`, true)
   } finally {
-    calcBtn.disabled = false
+    afterRun()
+  }
+}
+
+// A Config change on the build the worker already holds: no decode, no load. Effects shown in the Config table are
+// kept (greyed) and refreshed in the background.
+async function reconfig() {
+  busy = true
+  dirty = false
+  calcBtn.disabled = true
+  const g = ++gen
+  setStatus('Applying the Config change…')
+  const t0 = performance.now()
+  try {
+    const r = await setConfig({ autoConfig: loaded.auto ? 'suggest' : false, overrides, trials: 0, catalog: true, deltas: false })
+    const wall = performance.now() - t0
+    const e = r.timings.engine
+    setTiming('Last Config change (build stays loaded)', ms(wall), `reset + recalculation ${ms(e.load)} · snapshot ${ms(e.snapshot)}`)
+    setTiming('Memory now', mb(r.wasmHeapBytes))
+    render(r)
+    setStatus(`Config change applied in ${ms(wall)}.`)
+    window.__pobLast = { result: r, wallMs: wall, kind: 'reconfig' }
+    refreshMeasured(g)
+  } catch (e) {
+    loaded = null // the engine dropped the build; the next change reloads it
+    setStatus(`PoB could not apply this change: ${e.message}`, true)
+  } finally {
+    afterRun()
   }
 }
 
@@ -121,14 +180,28 @@ const SPLIT = [
   ['Chaos', 'ChaosHitAverage', 'var(--chaos)'],
 ]
 
+// A situational toggle's isolated effect: the response's own delta, else (after a Config change) the catalog's measurement of it.
+function suggestDelta(x) {
+  if (x.dpsDeltaPct != null) return { dps: x.dpsDeltaPct, ehp: x.ehpDelta }
+  const e = entries.get(x.key)
+  if (!e?.measured || !e.effect) return null
+  const d = e.effect
+  return { dps: d.TotalDPS?.pct ?? (d.TotalDPS ? null : 0), ehp: d.TotalEHP ? d.TotalEHP.to - d.TotalEHP.from : 0 }
+}
+
+let lastAuto = null
 function renderAutoConfig(a) {
+  lastAuto = a
   $('autocfg-panel').hidden = !a
   if (!a) return
   $('autocfg-sum').textContent = a.error
     ? `failed: ${a.error}`
     : `${fmtInt(a.baselineDPS)} → ${fmtInt(a.configuredDPS)} DPS`
   kvTable('autocfg-applied', a.applied.length ? a.applied.map((x) => [`${x.key} = ${x.value}`, x.source]) : [['Nothing to apply', 'No unset toggle has both a source and a consumer in this build.']])
-  const sug = a.suggested.map((x) => [`${x.key}`, `${x.source}${x.dpsDeltaPct != null ? ` · ${x.dpsDeltaPct >= 0 ? '+' : ''}${x.dpsDeltaPct}% DPS` : ''}${x.ehpDelta ? ` · ${x.ehpDelta >= 0 ? '+' : ''}${fmtInt(x.ehpDelta)} EHP` : ''}`])
+  const sug = a.suggested.map((x) => {
+    const d = suggestDelta(x)
+    return [`${x.key}`, `${x.source}${d?.dps != null ? ` · ${d.dps >= 0 ? '+' : ''}${d.dps}% DPS` : ''}${d?.ehp ? ` · ${d.ehp >= 0 ? '+' : ''}${fmtInt(d.ehp)} EHP` : ''}`]
+  })
   $('autocfg-sug').hidden = !sug.length
   kvTable('autocfg-suggested', sug)
 }
@@ -149,10 +222,22 @@ function effectText(d) {
 }
 const effectClass = (d) => { const p = d?.TotalDPS?.pct ?? d?.CombinedDPS?.pct; return p > 0 ? 'pos' : p < 0 ? 'neg' : '' }
 const STATE_LABEL = { export: 'in code', auto: 'auto', manual: 'manual', available: 'available' }
-const rerun = () => { if (!calcBtn.disabled) run() }
+
+// ---- Config table. `entries` is the catalog as the page knows it (key -> entry, PoB's order); an entry's measured
+// fields (effect | options[].vsSelected | perUnit/total | trials) can be stale after a Config change until the
+// background refresh replaces them (`staleFields`).
+const entries = new Map()
+const rowOf = new Map() // key -> { name, effect } cells, for in-place updates
+let trialMs = 400 // a measured trial's cost, refined from the engine's own timings
+const FIELDS = ['effect', 'options', 'perUnit', 'total', 'trials']
+const trialsOf = (e) => (e.type === 'check' ? 1 : e.type === 'list' ? Math.max(1, (e.options?.length ?? 1) - 1) : 2)
+const mk = (tag, props, ...kids) => {
+  const el = Object.assign(document.createElement(tag), props)
+  el.append(...kids)
+  return el
+}
 
 function control(e) {
-  const mk = (tag, props) => Object.assign(document.createElement(tag), props)
   const set = (v) => { overrides[e.key] = v; rerun() }
   if (e.type === 'check') return mk('input', { type: 'checkbox', checked: e.value === true, onchange: (ev) => set(ev.target.checked) })
   if (e.type === 'list') {
@@ -160,7 +245,79 @@ function control(e) {
     for (const o of e.options ?? []) sel.append(mk('option', { value: o.val, textContent: o.label.replace(/\s+/g, ' '), selected: o.selected }))
     return sel
   }
-  return mk('input', { type: 'number', min: 0, value: e.value, className: 'num', onchange: (ev) => ev.target.value !== '' && set(Number(ev.target.value)) })
+  const box = mk('span', { className: 'ctl' }, mk('input', { type: 'number', min: 0, value: e.value, className: 'num', title: 'Set this value', onchange: (ev) => ev.target.value !== '' && set(Number(ev.target.value)) }))
+  // Try a value without applying it: the effect of this count at that value against the current one.
+  const tryIn = mk('input', { type: 'number', min: 0, className: 'num try', placeholder: 'try…', title: 'Measure the effect of this value without applying it' })
+  const go = () => tryIn.value !== '' && Number.isFinite(Number(tryIn.value)) && measureSpecs([{ key: e.key, values: [Number(tryIn.value)] }])
+  tryIn.addEventListener('keydown', (ev) => ev.key === 'Enter' && go())
+  box.append(tryIn, mk('button', { type: 'button', className: 'secondary small', textContent: 'Try', onclick: go }))
+  return box
+}
+
+// [{ cls, text, stale }] lines for one entry's measured effects.
+function effectLines(e) {
+  const stale = (f) => !!e.staleFields?.includes(f)
+  const lines = []
+  const add = (d, text, f) => lines.push({ cls: effectClass(d), text: `${text}${effectText(d)}`, stale: stale(f) })
+  if (e.type === 'check' && e.effect) add(e.effect, e.value ? 'adds: ' : 'would add: ', 'effect')
+  if (e.type === 'count') {
+    if (e.perUnit) add(e.perUnit, 'per extra point: ', 'perUnit')
+    if (e.total) add(e.total, `${fmt2(e.value)} vs 0: `, 'total')
+    for (const t of e.trials ?? []) add(t.vs, `at ${fmt2(t.value)} (now ${fmt2(e.value)}): `, 'trials')
+  }
+  if (e.type === 'list') {
+    for (const o of e.options ?? []) if (!o.selected && o.vsSelected && Object.keys(o.vsSelected).length) add(o.vsSelected, `${o.label.replace(/\s+/g, ' ')}: `, 'options')
+  }
+  return lines
+}
+
+function fillEffect(e, cell) {
+  const lines = effectLines(e)
+  const kids = lines.map((l) => mk('div', { className: `${l.cls}${l.stale ? ' stale' : ''}`, textContent: l.text }))
+  if (e.measuring) kids.push(mk('div', { className: 'meta', textContent: 'measuring…' }))
+  else if (!e.measured) kids.push(mk('button', { type: 'button', className: 'secondary small', textContent: `Measure (~${ms(trialsOf(e) * trialMs)})`, onclick: () => measureSpecs([{ key: e.key }]) }))
+  else if (!lines.length) kids.push(mk('div', { className: 'meta', textContent: 'no change in tracked stats' }))
+  cell.replaceChildren(...kids)
+}
+
+function buildRow(e) {
+  const name = mk('td')
+  const ctl = mk('td', {}, control(e))
+  const eff = mk('td')
+  const fillName = () => name.replaceChildren(mk('span', { className: `badge ${e.state}`, textContent: STATE_LABEL[e.state] }), ' ', mk('span', { textContent: e.label, title: e.tooltip ?? '' }))
+  fillName()
+  fillEffect(e, eff)
+  rowOf.set(e.key, { eff })
+  return mk('tr', {}, name, ctl, eff)
+}
+
+function updateRow(key) {
+  const e = entries.get(key)
+  const r = rowOf.get(key)
+  if (e && r) fillEffect(e, r.eff)
+}
+
+// New catalog from the engine; measurements the response does not carry (after a Config change) are kept as stale.
+function mergeCatalog(cat) {
+  const prev = new Map(entries)
+  entries.clear()
+  for (const e of cat) {
+    const old = prev.get(e.key)
+    if (!e.measured && old?.measured) {
+      e.staleFields = FIELDS.filter((f) => old[f] != null && (f !== 'options'))
+      for (const f of e.staleFields) e[f] = old[f]
+      if (e.options && old.options) {
+        let any = false
+        for (const o of e.options) {
+          const oo = old.options.find((x) => x.val === o.val)
+          if (oo?.vsSelected) { o.vsSelected = oo.vsSelected; any = true }
+        }
+        if (any) e.staleFields.push('options')
+      }
+      e.measured = true
+    }
+    entries.set(e.key, e)
+  }
 }
 
 function renderCatalog(a) {
@@ -168,40 +325,96 @@ function renderCatalog(a) {
   const cat = a?.catalog
   panel.hidden = !cat
   if (!cat) return
-  const body = $('catalog').tBodies[0]
-  const rows = cat.map((e) => {
-    const tr = document.createElement('tr')
-    const name = document.createElement('td')
-    name.innerHTML = `<span class="badge ${e.state}">${STATE_LABEL[e.state]}</span> `
-    name.append(Object.assign(document.createElement('span'), { textContent: e.label, title: e.tooltip ?? '' }))
-    const ctl = document.createElement('td')
-    ctl.append(control(e))
-    const eff = document.createElement('td')
-    const lines = []
-    if (e.type === 'check') lines.push([e.effect, e.value ? 'turning it off: opposite of this' : 'turning it on:'])
-    if (e.type === 'count') {
-      if (e.perUnit) lines.push([e.perUnit, 'per extra point:'])
-      if (e.total) lines.push([e.total, `${fmt2(e.value)} vs 0:`])
-    }
-    if (e.type === 'list') for (const o of e.options ?? []) if (!o.selected && o.vsSelected && Object.keys(o.vsSelected).length) lines.push([o.vsSelected, `${o.label.replace(/\s+/g, ' ')}:`])
-    for (const [d, label] of lines) {
-      const div = document.createElement('div')
-      div.className = effectClass(d)
-      // A set toggle was measured off→on, so its numbers are what it currently adds.
-      div.textContent = `${e.type === 'check' ? (e.value ? 'adds: ' : 'would add: ') : label + ' '}${effectText(d)}`
-      eff.append(div)
-    }
-    if (!lines.length) eff.textContent = 'no change in tracked stats'
-    tr.append(name, ctl, eff)
-    return tr
+  mergeCatalog(cat)
+  rowOf.clear()
+  const list = [...entries.values()]
+  const shown = list.filter((e) => e.measured || e.state !== 'available')
+  $('catalog').tBodies[0].replaceChildren(...shown.map(buildRow))
+
+  // Everything else, by PoB's section: measured on request, per option or for the whole section.
+  const open = new Set([...document.querySelectorAll('#catalog-more details[open]')].map((d) => d.dataset.section))
+  const bySection = new Map()
+  for (const e of list) if (!(e.measured || e.state !== 'available')) (bySection.get(e.section ?? 'Other') ?? bySection.set(e.section ?? 'Other', []).get(e.section ?? 'Other')).push(e)
+  const secs = [...bySection].map(([name, es]) => {
+    const trials = es.reduce((n, e) => n + trialsOf(e), 0)
+    const btn = mk('button', { type: 'button', className: 'secondary small', textContent: `Measure all ${es.length} (~${ms(trials * trialMs)})`, onclick: (ev) => { ev.preventDefault(); measureSpecs(es.map((e) => ({ key: e.key }))) } })
+    const table = mk('table', { className: 'skills' }, mk('tbody', {}, ...es.map(buildRow)))
+    const d = mk('details', { open: open.has(name) }, mk('summary', {}, `${name} · ${es.length} not measured `, btn), mk('div', { className: 'table-scroll' }, table))
+    d.dataset.section = name
+    return d
   })
-  body.replaceChildren(...rows)
-  $('catalog-note').textContent = `${cat.length} options measured on this build, one change at a time (PoB recalculates each).${a.unmeasured ? ` ${a.unmeasured} other options are shown by PoB but not measured (trial budget).` : ''} Changing a control recalculates the build.`
+  $('catalog-more').replaceChildren(...secs)
+  const measuredN = list.filter((e) => e.measured).length
+  $('catalog-note').textContent = `${measuredN} of ${list.length} options PoB shows for this build are measured, one change at a time (PoB recalculates each, ~${ms(trialMs)} per trial here). The rest are listed by section below: measure one, or a whole section. A count can be tried at any value without applying it. Changing a control recalculates the build without reloading it.`
+}
+
+// ---- Measuring on request and refreshing after a Config change.
+function mergeMeasure(m) {
+  const e = entries.get(m.key)
+  if (!e) return
+  const fresh = (f) => { e.staleFields = (e.staleFields ?? []).filter((x) => x !== f) }
+  if (m.effect) { e.effect = m.effect; fresh('effect') }
+  if (m.perUnit) { e.perUnit = m.perUnit; fresh('perUnit') }
+  if (m.total) { e.total = m.total; fresh('total') }
+  if (m.options && e.options) {
+    for (const o of m.options) {
+      const mine = e.options.find((x) => x.val === o.val)
+      if (mine) mine.vsSelected = o.vsSelected
+    }
+    fresh('options')
+  }
+  if (m.trials?.length) {
+    const byValue = new Map((e.trials ?? []).map((t) => [t.value, t]))
+    for (const t of m.trials) byValue.set(t.value, t)
+    e.trials = [...byValue.values()].slice(-4) // the last few values tried
+    fresh('trials')
+  }
+  e.measured = true
+}
+
+// Measure in small chunks so the table fills in as results arrive; a newer Config change cancels what has not started.
+async function measureSpecs(specs, g = gen) {
+  const keys = [...new Set(specs.map((x) => x.key))].filter((k) => entries.has(k))
+  specs = specs.filter((x) => entries.has(x.key))
+  if (!specs.length) return
+  pendingMeasure++
+  window.__pobPending = pendingMeasure
+  for (const k of keys) { entries.get(k).measuring = true; updateRow(k) }
+  try {
+    for (let i = 0; i < specs.length; i += 4) {
+      const chunk = specs.slice(i, i + 4)
+      const res = await measure(chunk, { skip: () => g !== gen })
+      if (!res) break // the Config changed meanwhile: these numbers would be for the old one
+      const trials = chunk.reduce((n, sp) => n + (sp.values ? sp.values.length : trialsOf(entries.get(sp.key))), 0)
+      if (res.ms && trials) trialMs = Math.round(res.ms / trials)
+      for (const m of res.measured) mergeMeasure(m)
+      for (const sp of chunk) { entries.get(sp.key).measuring = false; updateRow(sp.key) }
+    }
+  } catch (e) {
+    setStatus(`Could not measure: ${e.message}`, true)
+  } finally {
+    for (const k of keys) { const e = entries.get(k); if (e) { e.measuring = false; updateRow(k) } }
+    pendingMeasure--
+    window.__pobPending = pendingMeasure
+    if (lastAuto && g === gen) renderAutoConfig(lastAuto)
+  }
+}
+
+// After a Config change: re-measure what was measured (and the situational toggles), up to a few dozen trials.
+function refreshMeasured(g) {
+  const specs = []
+  const wanted = new Set((lastAuto?.suggested ?? []).map((x) => x.key))
+  for (const e of entries.values()) {
+    if (!e.measured && !wanted.has(e.key)) continue
+    specs.push({ key: e.key })
+    if (e.type === 'count' && e.trials?.length) specs.push({ key: e.key, values: e.trials.map((t) => t.value) })
+  }
+  measureSpecs(specs.slice(0, 40), g)
 }
 
 function render(r) {
-  renderAutoConfig(r.autoConfig)
   renderCatalog(r.autoConfig)
+  renderAutoConfig(r.autoConfig)
   const s = r.snapshot.stats ?? {}
   $('results').hidden = false
   $('total-dps').textContent = fmtInt(s.TotalDPS)

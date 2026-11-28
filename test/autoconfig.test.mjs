@@ -35,6 +35,8 @@ assert.notEqual(bareXml, refXml)
 const TIER1 = new Set([
   'usePowerCharges', 'multiplierRage', 'multiplierCombo', 'conditionHaveEnergyShield', 'conditionCritRecently',
   'conditionNonCritRecently', 'conditionEnemyDazed', 'conditionEnemyShocked', 'conditionShockEffect',
+  'useFrenzyCharges', 'useEnduranceCharges', 'buffOnslaught', 'conditionLeeching', 'conditionLeechingLife',
+  'conditionLeechingMana', 'conditionLeechingEnergyShield',
 ])
 
 test('off by default: no autoConfig in the result and numbers unchanged', { skip, timeout: 300_000 }, () => {
@@ -111,4 +113,42 @@ test('overrides win over auto-config; catalog reports state and measured effect'
   assert.equal(boss.value, 'Boss')
   const uber = boss.options.find((o) => o.val === 'Uber')
   assert.ok(uber.vsSelected.TotalDPS.pct < 0, 'uber pinnacle is worse than a standard boss')
+})
+
+// setConfig / measure keep the build loaded: lines are calc, then setConfig (--then), then measure.
+function lines(xml, args) {
+  const f = join(dir, `b${n++}.xml`)
+  writeFileSync(f, xml)
+  const out = execFileSync(native, ['lua/cli.lua', f, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] })
+  return out.trim().split('\n').slice(1).map((l) => JSON.parse(l))
+}
+
+test('setConfig on the loaded build equals a fresh calc with the same overrides', { skip, timeout: 600_000 }, () => {
+  const [, re] = lines(bareXml, ['--auto-config', '--then=enemyIsBoss=Boss'])
+  const [fresh] = lines(bareXml, ['--auto-config', '--set=enemyIsBoss=Boss'])
+  assert.equal(re.error, undefined)
+  assert.equal(re.snapshot.stats.TotalDPS, fresh.snapshot.stats.TotalDPS)
+  assert.equal(re.snapshot.stats.TotalEHP, fresh.snapshot.stats.TotalEHP)
+  assert.deepEqual(re.autoConfig.applied.map((x) => x.key), fresh.autoConfig.applied.map((x) => x.key))
+})
+
+test('setConfig starts again from the export: an earlier override does not leak', { skip, timeout: 600_000 }, () => {
+  const [first, re] = lines(bareXml, ['--auto-config', '--then=enemyIsBoss=Boss'])
+  const [, back] = lines(bareXml, ['--auto-config', '--then=enemyIsBoss=Pinnacle'])
+  assert.notEqual(re.snapshot.stats.TotalDPS, first.snapshot.stats.TotalDPS)
+  assert.equal(back.snapshot.stats.TotalDPS, first.snapshot.stats.TotalDPS)
+})
+
+test('catalog lists every option, measures enemyIsBoss first, and measure() fills in the rest on request', { skip, timeout: 600_000 }, () => {
+  const [a, , m] = lines(bareXml, ['--auto-config=suggest', '--then=enemyIsBoss=Boss', '--measure=enemyLevel:60,80', '--measure=conditionBeenHitRecently'])
+  const cat = Object.fromEntries(a.autoConfig.catalog.map((e) => [e.key, e]))
+  assert.ok(a.autoConfig.catalog.length > 100, 'unmeasured options are listed, not dropped')
+  assert.equal(cat.enemyIsBoss.measured, true)
+  assert.ok(a.autoConfig.unmeasured > 0)
+  assert.ok(Object.values(cat).some((e) => e.section === 'Quest Rewards' && e.type === 'list' && e.options.length > 0), 'list options present even when not measured')
+  const lvl = m.measured.find((e) => e.key === 'enemyLevel')
+  assert.deepEqual(lvl.trials.map((t) => t.value), [60, 80])
+  assert.ok(lvl.trials[0].vs.TotalEHP.pct > 0, 'a much lower enemy level helps')
+  assert.ok(Object.keys(lvl.trials[1].vs).length > 0, 'every tried value is measured')
+  assert.ok(m.measured.some((e) => e.key === 'conditionBeenHitRecently' && e.measured))
 })
