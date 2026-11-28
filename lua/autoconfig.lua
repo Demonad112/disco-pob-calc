@@ -8,12 +8,11 @@
 -- and the main skill's flags. "Generator" checks read computed output (PowerChargesMax, MaximumRage, DazeChance...).
 --
 -- Policy: Tier 1 (generator and consumer both present) is applied. Tier 2 (situational: recent kills, been hit, boss
--- state, other charges) is only reported, with its isolated DPS/EHP delta when level == "suggest".
+-- state, Onslaught, charges with no generator found) is only reported, with its isolated DPS/EHP delta when level == "suggest".
 -- An input the export already carries (input[k] ~= nil, true or false) is never touched.
 local M = {}
 
 local ASSUMED_COMBO = 10 -- no stat gives a realistic Combo count; same value as the reference setup
-local ASSUMED_SHOCK = 20 -- conservative shock effect (%) when only a chance source exists
 local MIN_CRIT_FOR_RECENT = 25 -- % effective crit chance to treat "Crit Recently" as inherent
 local MAX_CRIT_FOR_NONCRIT = 95
 
@@ -36,16 +35,41 @@ local function usedLike(env, needle)
 	return false
 end
 
--- True when the modDB holds a modifier of one of these names from a real source (PoB's own "Base" / "Config" entries
--- exist for every build and only gate on the condition, they don't grant anything).
-local function grantsFlag(modDB, ...)
-	for i = 1, select("#", ...) do
-		for _, m in ipairs(modDB.mods[select(i, ...)] or {}) do
-			local src = tostring(m.source or ""):match("^[^:]*")
-			if m.type == "FLAG" and m.value and src ~= "Base" and src ~= "Config" then return true end
+-- Charge generation. Every character has 3 maximum Power/Frenzy/Endurance charges (CalcSetup.lua:39 from
+-- Data/Misc.lua characterConstants), so "maximum > 0" says nothing. PoB doesn't model generation either ("gain a
+-- Power Charge on Critical Hit" parses to nothing), so the evidence is: a raised maximum, or a line on an allocated
+-- passive, an equipped item or a socketed skill/support that grants the charge. Returns a reason or nil.
+local function chargeGenerator(env, output, kind)
+	local base = data and data.characterConstants and data.characterConstants["max_" .. kind:lower() .. "_charges"] or 3
+	local max = output[kind .. "ChargesMax"] or 0
+	if max > base then return string.format("Maximum %s Charges %d (base %d)", kind, max, base) end
+	local k = kind:lower()
+	-- A verb that gives the charge. "Consumes your Frenzy Charges on use" is a consumer and "when you gain a Power
+	-- Charge" a trigger, neither a source.
+	local pats = { "gain an? " .. k .. " charge", "gains? %d+ " .. k .. " charges?", "grants? you an? " .. k .. " charge",
+		"grants? an? " .. k .. " charge", "grant you an? " .. k .. " charge" }
+	local function hit(line)
+		line = tostring(line or ""):lower():gsub("when you gain an? " .. k .. " charge", "")
+		for _, p in ipairs(pats) do if line:find(p) then return true end end
+		return false
+	end
+	for _, node in pairs(build.spec and build.spec.allocNodes or {}) do
+		for _, l in ipairs(node.sd or {}) do if hit(l) then return "Passive " .. tostring(node.dn) .. ": " .. l end end
+	end
+	for slot, item in pairs(env.player.itemList or {}) do
+		if type(item) == "table" then
+			for _, list in ipairs({ "explicitModLines", "implicitModLines", "enchantModLines", "runeModLines" }) do
+				for _, ml in ipairs(item[list] or {}) do if hit(ml.line) then return slot .. ": " .. ml.line end end
+			end
 		end
 	end
-	return false
+	for _, skill in ipairs(env.player.activeSkillList or {}) do
+		for _, eff in ipairs(skill.effectList or {}) do
+			local ge = eff.grantedEffect
+			if ge and hit(ge.description) then return "Skill " .. tostring(ge.name) end
+		end
+	end
+	return nil
 end
 
 local function statsOf(env)
@@ -73,7 +97,6 @@ end
 
 -- Tier 1 rules. Each returns nil (not applicable) or a list of { key, value, source }.
 local function tier1(env, output)
-	local modDB = env.player.modDB
 	local skillModList, mainSkill = statsOf(env)
 	local skillCfg = mainSkill and mainSkill.skillCfg -- weapon/skill-flag conditioned chances only count under the skill's cfg
 	local rules = {}
@@ -81,24 +104,15 @@ local function tier1(env, output)
 		rules[#rules + 1] = { key = key, value = value, source = source, tier = 1 }
 	end
 
-	-- Power charges: a generator (maximum > 0) and something that scales with them.
-	if (output.PowerChargesMax or 0) > 0 and usedLike(env, "PowerCharge") then
-		add("usePowerCharges", true, "Maximum Power Charges " .. output.PowerChargesMax .. " and modifiers that scale with them")
-	end
-
-	-- Frenzy / Endurance charges: same shape as Power charges. (Endurance often follows Frenzy, so its maximum is read
-	-- from output too.)
-	if (output.FrenzyChargesMax or 0) > 0 and usedLike(env, "FrenzyCharge") then
-		add("useFrenzyCharges", true, "Maximum Frenzy Charges " .. output.FrenzyChargesMax .. " and modifiers that scale with them")
-	end
-	if (output.EnduranceChargesMax or 0) > 0 and usedLike(env, "EnduranceCharge") then
-		add("useEnduranceCharges", true, "Maximum Endurance Charges " .. output.EnduranceChargesMax .. " and modifiers that scale with them")
-	end
-
-	-- Onslaught: a modifier that grants it (not PoB's own Base/Config bookkeeping) and one that needs it. The option
-	-- also adds the buff itself (20% increased Attack, Cast and Movement Speed), which is the point of "you have it".
-	if used(env.conditionsUsed, "Onslaught") and grantsFlag(modDB, "Onslaught", "Condition:Onslaught") then
-		add("buffOnslaught", true, "A modifier grants Onslaught and others need it")
+	-- Power / Frenzy / Endurance charges: something scales with them (consumer) and something generates them
+	-- (chargeGenerator). A consumer without a generator is only suggested (Tier 2, see tier2()).
+	for _, kind in ipairs({ "Power", "Frenzy", "Endurance" }) do
+		if usedLike(env, kind .. "Charge") then
+			local gen = chargeGenerator(env, output, kind)
+			if gen then
+				add("use" .. kind .. "Charges", true, gen .. "; modifiers scale with them")
+			end
+		end
 	end
 
 	-- Leeching: the main skill leeches (damage as Life/Mana/ES) and a modifier is conditional on leeching. The leech
@@ -150,9 +164,11 @@ local function tier1(env, output)
 			add("conditionEnemyDazed", true, "Main skill has a chance to Daze")
 		end
 		local shockChance = (output.ShockChance or 0) > 0 or skillModList:Sum("BASE", skillCfg, "EnemyShockChance") > 0
+		-- No assumed Shock effect: with the enemy Shocked, PoB applies the build's own computed Shock and only takes
+		-- conditionShockEffect when it is stronger (ConfigOptions.lua:1838), so an assumed value is either inert or an
+		-- inflation.
 		if used(env.enemyConditionsUsed, "Shocked") and shockChance then
-			add("conditionEnemyShocked", true, "Main skill can Shock and modifiers apply against Shocked enemies")
-			add("conditionShockEffect", ASSUMED_SHOCK, "Assumed shock effect")
+			add("conditionEnemyShocked", true, "Main skill can Shock and modifiers apply against Shocked enemies (PoB's own Shock effect)")
 		end
 	end
 	return rules
@@ -170,6 +186,17 @@ local function tier2(env, output)
 	if used(cu, "ChilledEnemyRecently") then add("conditionChilledEnemyRecently", true, "Modifiers conditional on chilling recently") end
 	if used(cu, "ShockedEnemyRecently") then add("conditionShockedEnemyRecently", true, "Modifiers conditional on shocking recently") end
 	if used(eu, "Chilled") then add("conditionEnemyChilled", true, "Modifiers against Chilled enemies") end
+	-- Charges with a consumer but no generator found (Tier 1 takes the ones with one).
+	for _, kind in ipairs({ "Power", "Frenzy", "Endurance" }) do
+		if usedLike(env, kind .. "Charge") and not chargeGenerator(env, output, kind) then
+			add("use" .. kind .. "Charges", true, "Modifiers scale with " .. kind .. " Charges, but nothing found that generates them")
+		end
+	end
+	-- Onslaught: PoB already grants it when a granting modifier's own conditions hold (CalcPerform.lua:614), so the
+	-- toggle only asserts conditions (on kill, on hit at max Frenzy...) that PoB can't see: situational.
+	if used(cu, "Onslaught") and not env.player.modDB:Flag(nil, "Onslaught") then
+		add("buffOnslaught", true, "Modifiers need Onslaught; the toggle also adds the buff itself")
+	end
 	return c
 end
 
@@ -233,7 +260,7 @@ local function clean(s)
 	return (tostring(s or ""):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", ""))
 end
 
--- Set one input, recalculate, read the stats, restore. Returns stats or nil on a PoB error.
+-- Set one input, recalculate, read the stats, restore. Returns stats, or nil and PoB's error.
 local function trial(pob, key, value, budget)
 	local input = build.configTab.input
 	local old = input[key]
@@ -242,7 +269,7 @@ local function trial(pob, key, value, budget)
 	local err = recalc(pob)
 	local s = (not err) and snap() or nil
 	input[key] = old
-	return s
+	return s, err
 end
 
 local TYPES = { check = true, count = true, countAllowZero = true, integer = true, float = true, list = true }
@@ -262,15 +289,20 @@ end
 local function measureEntry(pob, v, e, base, budget, limit, values)
 	local key = e.key
 	local before = budget.n
+	local function try(value)
+		local st, err = trial(pob, key, value, budget)
+		if err then e.error = err end -- kept visible: a failed trial is not "no change"
+		return st
+	end
 	if v.type == "check" then
 		if budget.n >= limit then return end
 		local on = e.value == true
-		local s = trial(pob, key, not on, budget)
+		local s = try(not on)
 		if s then e.effect = on and diff(pob, s, base) or diff(pob, base, s) end
 	elseif v.type == "list" then
 		for _, o in ipairs(e.options) do
 			if not o.selected and budget.n < limit then
-				local s = trial(pob, key, o.val, budget)
+				local s = try(o.val)
 				if s then o.vsSelected = diff(pob, base, s) end
 			end
 		end
@@ -278,17 +310,17 @@ local function measureEntry(pob, v, e, base, budget, limit, values)
 		e.trials = {}
 		for _, val in ipairs(values) do
 			if budget.n < limit and tonumber(val) then
-				local s = trial(pob, key, tonumber(val), budget)
+				local s = try(tonumber(val))
 				if s then e.trials[#e.trials + 1] = { value = tonumber(val), vs = diff(pob, base, s) } end
 			end
 		end
 	else
 		if budget.n >= limit then return end
 		local n = tonumber(e.value) or 0
-		local s = trial(pob, key, n + 1, budget)
+		local s = try(n + 1)
 		if s then e.perUnit = diff(pob, base, s) end
 		if n > 0 and budget.n < limit then
-			local s0 = trial(pob, key, 0, budget)
+			local s0 = try(0)
 			if s0 then e.total = diff(pob, s0, base) end
 		end
 	end
@@ -296,6 +328,7 @@ local function measureEntry(pob, v, e, base, budget, limit, values)
 end
 
 local function hasEffect(e)
+	if e.error then return true end
 	if e.effect and next(e.effect) then return true end
 	if e.perUnit and next(e.perUnit) then return true end
 	if e.total and next(e.total) then return true end
